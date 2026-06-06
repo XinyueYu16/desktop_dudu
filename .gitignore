@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Backend secrets & local runtime
+backend/.env
+backend/venv/
+backend/data/memory/*.jsonl
+
+# Godot 4
+dudu_pet/.godot/
+dudu_pet/*.tmp
+dudu_pet/export/
+dudu_pet/export_presets.cfg
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+*.code-workspace
+
+# Local AI tool settings (machine-specific)
+.claude/
+
+# Bundled Godot editor (download locally, do not commit)
+tools/

@@ -1,0 +1,80 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/chat_panel.gd" id="1_script"]
+
+[node name="ChatPanel" type="Control"]
+layout_mode = 0
+offset_left = 0.0
+offset_top = 0.0
+offset_right = 340.0
+offset_bottom = 420.0
+mouse_filter = 0
+script = ExtResource("1_script")
+
+[node name="PanelBg" type="Panel" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+
+[node name="TitleBar" type="MarginContainer" parent="PanelBg"]
+layout_mode = 1
+offset_left = 12.0
+offset_top = 10.0
+offset_right = 328.0
+offset_bottom = 40.0
+
+[node name="TitleHBox" type="HBoxContainer" parent="PanelBg/TitleBar"]
+layout_mode = 2
+
+[node name="TitleLabel" type="Label" parent="PanelBg/TitleBar/TitleHBox"]
+layout_mode = 2
+text = "🌙 魔法日记"
+size_flags_horizontal = 3
+theme_override_font_sizes/font_size = 15
+theme_override_colors/font_color = Color(0.9, 0.85, 1, 1)
+
+[node name="CloseBtn" type="Button" parent="PanelBg/TitleBar/TitleHBox"]
+layout_mode = 2
+text = "✕"
+flat = true
+custom_minimum_size = Vector2(28, 28)
+theme_override_font_sizes/font_size = 16
+theme_override_colors/font_color = Color(0.7, 0.7, 0.8, 1)
+
+[node name="MessageScroll" type="ScrollContainer" parent="PanelBg"]
+layout_mode = 1
+offset_left = 4.0
+offset_top = 46.0
+offset_right = 336.0
+offset_bottom = 368.0
+horizontal_scroll_mode = 0
+clip_contents = true
+
+[node name="MessageList" type="VBoxContainer" parent="PanelBg/MessageScroll"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 8
+
+[node name="InputContainer" type="MarginContainer" parent="PanelBg"]
+layout_mode = 1
+offset_left = 8.0
+offset_top = 374.0
+offset_right = 332.0
+offset_bottom = 416.0
+
+[node name="InputHBox" type="HBoxContainer" parent="PanelBg/InputContainer"]
+layout_mode = 2
+
+[node name="InputField" type="TextEdit" parent="PanelBg/InputContainer/InputHBox"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+custom_minimum_size = Vector2(0, 36)
+wrap_mode = 1
+
+[node name="SendBtn" type="Button" parent="PanelBg/InputContainer/InputHBox"]
+layout_mode = 2
+text = "发送"
+custom_minimum_size = Vector2(52, 36)
+disabled = true
