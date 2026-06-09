@@ -14,10 +14,10 @@ script = ExtResource("1_main")
 
 [node name="CatTexture" type="TextureRect" parent="." unique_id=348314989]
 layout_mode = 0
-offset_left = 436.0
-offset_top = 300.0
-offset_right = 564.0
-offset_bottom = 428.0
+offset_left = 536.0
+offset_top = 380.0
+offset_right = 664.0
+offset_bottom = 508.0
 expand_mode = 1
 stretch_mode = 5
 

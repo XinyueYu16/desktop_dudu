@@ -1,12 +1,11 @@
 extends Control
 
-# Bottom half-circle menu — 5 items in a relaxed arc below the cat.
-# Click outside (left-click) → close. Overlay only activates after a short delay
-# to avoid eating the right-click that opened the menu.
+# 嘟嘟快捷菜单 — 动森风格侧边卡片
+# Replaces the old half-circle fan menu with a clean vertical card.
+# Card appears to the right of the cat (or left if no space), never above.
 
 signal item_selected(action: String)
 
-# Left → Right order
 const ITEMS: Array[Dictionary] = [
 	{"icon": "💬", "label": "聊天记录", "action": "chat_history"},
 	{"icon": "⏰", "label": "定时提醒", "action": "reminders"},
@@ -15,20 +14,23 @@ const ITEMS: Array[Dictionary] = [
 	{"icon": "⚙️", "label": "设置",     "action": "settings"},
 ]
 
-const RADIUS: float = 135.0
-const BUTTON_SIZE: Vector2 = Vector2(72, 72)
+const ITEM_HEIGHT := 36.0
+const ITEM_WIDTH := 130.0
+const CARD_PADDING := 10.0
+const GAP_FROM_CAT := 18.0
 
-var _buttons: Array[Button] = []
 var _open: bool = false
-var _center: Vector2 = Vector2.ZERO
-var _overlay: ColorRect
+var _card: PanelContainer = null
+var _items_vbox: VBoxContainer = null
+var _buttons: Array[Button] = []
+var _overlay: ColorRect = null
 
 
 func _ready():
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	clip_contents = false
 	_create_overlay()
-	_create_buttons()
+	_create_card()
 
 
 func _create_overlay():
@@ -37,76 +39,87 @@ func _create_overlay():
 	_overlay.mouse_filter = Control.MOUSE_FILTER_STOP
 	_overlay.size = get_viewport().get_visible_rect().size
 	_overlay.position = Vector2.ZERO
-	# Only close on LEFT click — never eat the right-click
 	_overlay.gui_input.connect(_on_overlay_input)
 	_overlay.hide()
 	add_child(_overlay)
 
 
-func _create_buttons():
+func _create_card():
+	_card = PanelContainer.new()
+	_card.mouse_filter = Control.MOUSE_FILTER_STOP
+	_card.add_theme_stylebox_override("panel", ACStyle.card_stylebox(12.0))
+
+	_items_vbox = VBoxContainer.new()
+	_items_vbox.add_theme_constant_override("separation", 2)
+	_card.add_child(_items_vbox)
+
 	for item in ITEMS:
 		var btn := Button.new()
-		btn.text = item["icon"] + "\n" + item["label"]
-		btn.flat = false
-		btn.custom_minimum_size = BUTTON_SIZE
-		btn.size = BUTTON_SIZE
-		btn.modulate.a = 0.0
-		btn.scale = Vector2(0.3, 0.3)
-		btn.hide()
-
-		var sb := StyleBoxFlat.new()
-		sb.bg_color = Color(0.1, 0.1, 0.18, 0.85)
-		sb.corner_radius_top_left = BUTTON_SIZE.x / 2
-		sb.corner_radius_top_right = BUTTON_SIZE.x / 2
-		sb.corner_radius_bottom_left = BUTTON_SIZE.x / 2
-		sb.corner_radius_bottom_right = BUTTON_SIZE.x / 2
-		sb.border_width_left = 1; sb.border_width_right = 1
-		sb.border_width_top = 1; sb.border_width_bottom = 1
-		sb.border_color = Color(1, 1, 1, 0.2)
-		btn.add_theme_stylebox_override("normal", sb)
-
-		var sb_h := sb.duplicate() as StyleBoxFlat
-		sb_h.bg_color = Color(0.2, 0.2, 0.35, 0.9)
-		sb_h.border_color = Color(1, 1, 1, 0.5)
-		btn.add_theme_stylebox_override("hover", sb_h)
-
-		btn.add_theme_font_size_override("font_size", 11)
-		btn.add_theme_color_override("font_color", Color(0.9, 0.9, 1, 1))
-
+		btn.flat = true
+		btn.custom_minimum_size = Vector2(ITEM_WIDTH, ITEM_HEIGHT)
+		btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		btn.text = "  %s  %s" % [item["icon"], item["label"]]
+		btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		btn.add_theme_font_size_override("font_size", 13)
+		btn.add_theme_color_override("font_color", ACStyle.BROWN)
+		btn.add_theme_stylebox_override("normal", ACStyle.menu_item_stylebox(false))
+		btn.add_theme_stylebox_override("hover", ACStyle.menu_item_stylebox(true))
 		btn.pressed.connect(_on_button_pressed.bind(item["action"]))
-		add_child(btn)
+		_items_vbox.add_child(btn)
 		_buttons.append(btn)
 
+	add_child(_card)
+	_card.hide()
+	_card.modulate.a = 0.0
 
-func _angle_for_index(i: int) -> float:
-	# Left→Right: 3PI/4 (bottom-left) → PI/2 (center-bottom) → PI/4 (bottom-right)
-	var n := ITEMS.size()
-	var t := float(i) / float(n - 1)
-	return lerpf(PI * 3.0 / 4.0, PI / 4.0, t)
+
+func apply_ui_scale() -> void:
+	var s := UiConfig.scale
+	_card.custom_minimum_size = Vector2(
+		UiConfig.s(ITEM_WIDTH + CARD_PADDING * 2 + 4), 0
+	)
+	for btn in _buttons:
+		btn.custom_minimum_size = Vector2(UiConfig.s(ITEM_WIDTH), UiConfig.s(ITEM_HEIGHT))
+		btn.add_theme_font_size_override("font_size", UiConfig.si(13))
 
 
 func open(center: Vector2):
 	if _open:
 		return
 	_open = true
-	_center = center
+
 	_overlay.size = get_viewport().get_visible_rect().size
 	_overlay.show()
 
-	for i in ITEMS.size():
-		var btn := _buttons[i]
-		var angle := _angle_for_index(i)
-		var target_pos := center + Vector2(cos(angle), sin(angle)) * RADIUS - BUTTON_SIZE / 2
+	_card.reset_size()
+	var card_size := _card.size
+	var card_w := maxf(card_size.x, UiConfig.s(ITEM_WIDTH + CARD_PADDING * 2 + 4))
+	var card_h := maxf(card_size.y, 1.0)
 
-		btn.position = center - BUTTON_SIZE / 2
-		btn.modulate.a = 0
-		btn.scale = Vector2(0.3, 0.3)
-		btn.show()
+	var view_w := float(get_viewport().get_visible_rect().size.x)
+	var view_h := float(get_viewport().get_visible_rect().size.y)
 
-		var tw := create_tween().set_parallel(true).set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_BACK)
-		tw.tween_property(btn, "position", target_pos, 0.35).set_delay(i * 0.04)
-		tw.tween_property(btn, "modulate:a", 1.0, 0.25).set_delay(i * 0.04)
-		tw.tween_property(btn, "scale", Vector2.ONE, 0.35).set_delay(i * 0.04)
+	# Prefer right side, fallback to left
+	var pos_x: float
+	var slide_dir: float
+	if center.x + 64 + GAP_FROM_CAT + card_w <= view_w:
+		pos_x = center.x + 64 + UiConfig.s(GAP_FROM_CAT)
+		slide_dir = -10.0
+	else:
+		pos_x = center.x - 64 - UiConfig.s(GAP_FROM_CAT) - card_w
+		slide_dir = 10.0
+
+	var pos_y := center.y - card_h / 2.0
+	pos_y = clampf(pos_y, UiConfig.s(8), view_h - card_h - UiConfig.s(8))
+
+	_card.position = Vector2(pos_x + slide_dir, pos_y)
+	_card.modulate.a = 0.0
+	_card.show()
+
+	var tw := create_tween().set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_CUBIC)
+	tw.set_parallel(true)
+	tw.tween_property(_card, "position:x", pos_x, 0.22)
+	tw.tween_property(_card, "modulate:a", 1.0, 0.18)
 
 
 func close():
@@ -115,13 +128,13 @@ func close():
 	_open = false
 	_overlay.hide()
 
-	for i in _buttons.size():
-		var btn := _buttons[i]
-		var tw := create_tween().set_parallel(true).set_ease(Tween.EASE_IN).set_trans(Tween.TRANS_BACK)
-		tw.tween_property(btn, "position", _center - BUTTON_SIZE / 2, 0.2).set_delay(i * 0.02)
-		tw.tween_property(btn, "modulate:a", 0.0, 0.15).set_delay(i * 0.02)
-		tw.tween_property(btn, "scale", Vector2(0.3, 0.3), 0.2).set_delay(i * 0.02)
-		tw.tween_callback(btn.hide).set_delay(0.2)
+	var tw := create_tween().set_ease(Tween.EASE_IN).set_trans(Tween.TRANS_CUBIC)
+	tw.set_parallel(true)
+	# Slide back toward cat + fade
+	var dir := 10.0 if _card.position.x > get_viewport().get_visible_rect().size.x / 2.0 else -10.0
+	tw.tween_property(_card, "position:x", _card.position.x + dir, 0.15)
+	tw.tween_property(_card, "modulate:a", 0.0, 0.12)
+	tw.tween_callback(_card.hide).set_delay(0.15)
 
 
 func _on_button_pressed(action: String):
@@ -130,17 +143,15 @@ func _on_button_pressed(action: String):
 
 
 func _on_overlay_input(event: InputEvent):
-	# Only close on LEFT click, never the right-click that opened us
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
 		close()
+
 
 func is_open() -> bool:
 	return _open
 
 
 func get_button_global_rects() -> Array[Rect2]:
-	var rects: Array[Rect2] = []
-	for btn in _buttons:
-		if btn.visible and btn.modulate.a > 0:
-			rects.append(btn.get_global_rect())
-	return rects
+	if not _open or not _card.visible:
+		return []
+	return [_card.get_global_rect()]

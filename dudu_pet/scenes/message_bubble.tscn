@@ -6,13 +6,24 @@
 size_flags_horizontal = 3
 script = ExtResource("1_script")
 
-[node name="BubblePanel" type="PanelContainer" parent="."]
+[node name="ContentVBox" type="VBoxContainer" parent="."]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 3
+
+[node name="BubblePanel" type="PanelContainer" parent="ContentVBox"]
 layout_mode = 2
 size_flags_horizontal = 3
 
-[node name="BubbleLabel" type="Label" parent="BubblePanel"]
+[node name="BubbleLabel" type="Label" parent="ContentVBox/BubblePanel"]
 layout_mode = 2
 size_flags_horizontal = 3
 text = ""
 autowrap_mode = 2
 custom_minimum_size = Vector2(200, 0)
+
+[node name="TimeLabel" type="Label" parent="ContentVBox"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_font_sizes/font_size = 11
+theme_override_colors/font_color = Color(0.55, 0.55, 0.65, 1)

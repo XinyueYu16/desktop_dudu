@@ -43,10 +43,17 @@ var _history_cache: Array = []
 
 const MSG_BUBBLE = preload("res://scenes/message_bubble.tscn")
 const ChatBubbleStyle = preload("res://scripts/chat_bubble_style.gd")
-# Phase0 验证过 1000×700 透明正常；整屏尺寸 (1920×1080) 会在 Win10 触发黑底
-const PET_WINDOW_SIZE := Vector2i(1000, 700)
-const CAT_SIZE := 128.0
-const SPACE_ABOVE_CAT := 300.0
+const BASE_CAT_SIZE := 128.0
+const BASE_SPACE_ABOVE_CAT := 380.0
+const INPUT_GAP_ABOVE_CAT := 12.0
+const BUBBLE_GAP_ABOVE_INPUT := 14.0
+const BREATHE_PEAK_Y := 1.012
+const BREATHE_PERIOD := 2.6
+
+var _cat_base_height: float = 128.0
+var _cat_center_x: float = 0.0
+var _cat_bottom: float = 0.0
+var _stack_layout_gen: int = 0
 
 
 # ============================================================
@@ -60,16 +67,18 @@ func _ready():
 	_create_hover_input()
 	_create_floating_bubbles()
 	_setup_chat_panel()
+	_apply_ui_scale_to_children()
+	_apply_layer_order()
 	_wire_signals()
 	_play_anim(Anim.IDLE)
 	_connect_ws()
 	get_tree().create_timer(1.0).timeout.connect(_check_and_launch_backend)
-	print("DuDu Phase 2 started")
+	print("DuDu Phase 2 started — window %s scale %.2f" % [UiConfig.window_size, UiConfig.scale])
 
 
 func _style_speech_bubble():
-	ChatBubbleStyle.apply_to_panel(speech_bubble, bubble, "assistant")
-	bubble.custom_minimum_size = Vector2(180, 0)
+	ChatBubbleStyle.apply_to_panel(speech_bubble, bubble, "assistant", true)
+	bubble.custom_minimum_size = Vector2(UiConfig.s(180), 0)
 
 
 func _cat_rect() -> Rect2:
@@ -81,18 +90,60 @@ func _cat_center() -> Vector2:
 	return r.position + r.size / 2.0
 
 
+func _set_cat_breathe(sy: float) -> void:
+	# Vertical only — width fixed, aspect preserved, feet pinned to bottom
+	cat.scale = Vector2.ONE
+	var w := _cat_base_height
+	var h := _cat_base_height * sy
+	cat.offset_left = _cat_center_x - w / 2.0
+	cat.offset_right = _cat_center_x + w / 2.0
+	cat.offset_top = _cat_bottom - h
+	cat.offset_bottom = _cat_bottom
+
+
+func _input_box_top() -> float:
+	if _hover_input.visible and _hover_input.modulate.a > 0:
+		return _hover_input.position.y
+	var cat_rect := _cat_rect()
+	var hh := UiConfig.s(36)
+	if _hover_input:
+		_hover_input.reset_size()
+		hh = maxf(_hover_input.size.y, UiConfig.s(36))
+	return cat_rect.position.y - hh - UiConfig.s(INPUT_GAP_ABOVE_CAT)
+
+
+func _bubble_bottom_limit() -> float:
+	return _input_box_top() - UiConfig.s(BUBBLE_GAP_ABOVE_INPUT)
+
+
+func _apply_layer_order() -> void:
+	# Back → front: cat, speech, bubbles, input (input must stay above bubbles)
+	var ordered: Array[Node] = [cat, speech_bubble, _floating_bubbles, _hover_input, circ_menu]
+	if chat_panel:
+		ordered.append(chat_panel)
+	for i in ordered.size():
+		move_child(ordered[i], i)
+
+
 func _setup_chat_panel():
 	var scene = load("res://scenes/chat_panel.tscn")
 	chat_panel = scene.instantiate()
 	add_child(chat_panel)
 
 
+func _apply_ui_scale_to_children() -> void:
+	chat_panel.apply_ui_scale()
+	circ_menu.apply_ui_scale()
+	_schedule_stack_layout()
+
+
 func _setup_window():
 	var screen_idx := DisplayServer.window_get_current_screen()
 	var screen_size := DisplayServer.screen_get_size(screen_idx)
 	var screen_pos := DisplayServer.screen_get_position(screen_idx)
-	get_window().size = PET_WINDOW_SIZE
-	get_window().position = screen_pos + (screen_size - PET_WINDOW_SIZE) / 2
+	UiConfig.init_from_screen(screen_size)
+	get_window().size = UiConfig.window_size
+	get_window().position = screen_pos + (screen_size - UiConfig.window_size) / 2
 
 	set_anchors_preset(Control.PRESET_FULL_RECT)
 	offset_left = 0; offset_top = 0; offset_right = 0; offset_bottom = 0
@@ -107,12 +158,16 @@ func _setup_window():
 
 
 func _layout_cat_in_window():
-	# Center DuDu in the window; extra headroom above for bubbles / hover input
-	var w := float(PET_WINDOW_SIZE.x)
-	cat.offset_left = (w - CAT_SIZE) / 2.0
-	cat.offset_right = cat.offset_left + CAT_SIZE
-	cat.offset_top = SPACE_ABOVE_CAT
-	cat.offset_bottom = cat.offset_top + CAT_SIZE
+	var w := float(UiConfig.window_size.x)
+	_cat_base_height = UiConfig.s(BASE_CAT_SIZE)
+	_cat_center_x = w / 2.0
+	cat.offset_left = _cat_center_x - _cat_base_height / 2.0
+	cat.offset_right = _cat_center_x + _cat_base_height / 2.0
+	cat.offset_top = UiConfig.s(BASE_SPACE_ABOVE_CAT)
+	cat.offset_bottom = cat.offset_top + _cat_base_height
+	_cat_bottom = cat.offset_bottom
+	cat.scale = Vector2.ONE
+	cat.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 
 
 func _load_cat_texture():
@@ -147,22 +202,14 @@ func _create_hover_input():
 	_hover_input.hide()
 	_hover_input.modulate.a = 0
 	_hover_input.mouse_filter = Control.MOUSE_FILTER_STOP
-
-	# Style the panel
-	var psb := StyleBoxFlat.new()
-	psb.bg_color = Color(0.1, 0.1, 0.16, 0.82)
-	psb.corner_radius_top_left = 12; psb.corner_radius_top_right = 12
-	psb.corner_radius_bottom_left = 12; psb.corner_radius_bottom_right = 12
-	psb.border_width_left = 1; psb.border_width_right = 1
-	psb.border_width_top = 1; psb.border_width_bottom = 1
-	psb.border_color = Color(1, 1, 1, 0.12)
-	_hover_input.add_theme_stylebox_override("panel", psb)
+	_hover_input.add_theme_stylebox_override("panel", ChatBubbleStyle.make_input_stylebox(true))
 
 	_hover_text = TextEdit.new()
-	_hover_text.custom_minimum_size = Vector2(220, 0)
+	_hover_text.custom_minimum_size = Vector2(ChatBubbleStyle.content_min_width(), 0)
 	_hover_text.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
-	_hover_text.add_theme_font_size_override("font_size", 14)
-	_hover_text.add_theme_color_override("font_color", Color(1, 1, 1, 1))
+	_hover_text.add_theme_font_size_override("font_size", UiConfig.si(14))
+	_hover_text.add_theme_color_override("font_color", ACStyle.LIGHT_TEXT)
+	_hover_text.add_theme_color_override("font_placeholder_color", Color(ACStyle.TAN.r, ACStyle.TAN.g, ACStyle.TAN.b, 0.5))
 	_hover_text.add_theme_stylebox_override("normal", _transparent_stylebox())
 	_hover_text.add_theme_stylebox_override("focus", _transparent_stylebox())
 	_hover_text.placeholder_text = "说点什么..."
@@ -180,7 +227,7 @@ func _create_floating_bubbles():
 	_floating_bubbles = VBoxContainer.new()
 	_floating_bubbles.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_floating_bubbles.alignment = BoxContainer.ALIGNMENT_CENTER
-	_floating_bubbles.add_theme_constant_override("separation", 6)
+	_floating_bubbles.add_theme_constant_override("separation", UiConfig.si(6))
 	_floating_bubbles.hide()
 	_floating_bubbles.modulate.a = 0
 	add_child(_floating_bubbles)
@@ -230,8 +277,7 @@ func _show_hover_input():
 	if _floating_bubbles.get_child_count() > 0:
 		_floating_bubbles.show()
 		_floating_bubbles.modulate.a = 1
-		call_deferred("_position_floating_bubbles")
-	call_deferred("_position_hover_input")
+	_schedule_stack_layout()
 	var tw = create_tween()
 	tw.tween_property(_hover_input, "modulate:a", 1.0, 0.2)
 func _hide_hover_input():
@@ -239,17 +285,46 @@ func _hide_hover_input():
 		_hover_tween.kill()
 	_hover_tween = create_tween()
 	_hover_tween.tween_property(_hover_input, "modulate:a", 0.0, 0.15)
-	_hover_tween.tween_callback(_hover_input.hide)
+	_hover_tween.tween_callback(func():
+		_hover_input.hide()
+		if _floating_bubbles.get_child_count() > 0 or speech_bubble.visible:
+			_schedule_stack_layout()
+	)
 
 
 func _position_hover_input():
-	_hover_input.custom_minimum_size = Vector2(240, 0)
+	var min_w := ChatBubbleStyle.outer_min_width()
+	_hover_input.custom_minimum_size = Vector2(min_w, 0)
 	_hover_input.reset_size()
 	var cx := _cat_center().x
-	var hw := maxf(_hover_input.size.x, 240.0)
-	var hh := maxf(_hover_input.size.y, 36.0)
+	var hw := maxf(_hover_input.size.x, min_w)
+	var hh := maxf(_hover_input.size.y, UiConfig.s(36))
 	var cat_rect := _cat_rect()
-	_hover_input.position = Vector2(cx - hw / 2.0, cat_rect.position.y - hh - 12.0)
+	_hover_input.position = Vector2(cx - hw / 2.0, cat_rect.position.y - hh - UiConfig.s(INPUT_GAP_ABOVE_CAT))
+
+
+func _schedule_stack_layout() -> void:
+	_stack_layout_gen += 1
+	var gen := _stack_layout_gen
+	call_deferred("_run_stack_layout", gen)
+
+
+func _run_stack_layout(gen: int) -> void:
+	if gen != _stack_layout_gen:
+		return
+	_position_hover_input()
+	for c in _floating_bubbles.get_children():
+		c.reset_size()
+	_floating_bubbles.reset_size()
+	call_deferred("_finish_stack_layout", gen)
+
+
+func _finish_stack_layout(gen: int) -> void:
+	if gen != _stack_layout_gen:
+		return
+	_position_floating_bubbles()
+	if speech_bubble.visible:
+		_position_bubble()
 
 
 func _on_hover_text_input(event: InputEvent):
@@ -291,7 +366,7 @@ func _open_circular_menu():
 
 func _send_chat(text: String, panel_user_added: bool = false):
 	if not panel_user_added:
-		chat_panel.add_message("user", text)
+		chat_panel.add_message("user", text, _now_timestamp())
 	_send_ws({
 		"type": "user.chat",
 		"text": text,
@@ -322,7 +397,7 @@ func _open_chat_history():
 func _show_floating_bubbles():
 	_floating_bubbles.show()
 	_floating_bubbles.modulate.a = 1.0
-	call_deferred("_position_floating_bubbles")
+	_schedule_stack_layout()
 
 
 # ============================================================
@@ -362,7 +437,7 @@ func _handle_ws_messages():
 				# Update chat panel
 				if chat_panel.visible:
 					if _streaming_bubble:
-						chat_panel.add_message("assistant", delta)
+						chat_panel.add_message("assistant", delta, _now_timestamp())
 						_streaming_bubble = false
 					else:
 						chat_panel.append_last(delta)
@@ -380,7 +455,7 @@ func _handle_ws_messages():
 				_stream_buffer = ""
 				_streaming_bubble = false
 				_floating_assistant_added = false
-				_position_floating_bubbles()
+				_schedule_stack_layout()
 				_play_anim(Anim.IDLE)
 
 			"window.hide":
@@ -450,19 +525,14 @@ func _update_passthrough():
 	get_window().mouse_passthrough_polygon = poly
 
 func _position_floating_bubbles():
-	_floating_bubbles.reset_size()
-	var bw := _floating_bubbles.size.x
+	var limit_y := _bubble_bottom_limit()
 	var bh := _floating_bubbles.size.y
-	if bh <= 0:
-		return
+	var bw := _floating_bubbles.size.x
 	var cx := _cat_center().x
-	var cat_top := _cat_rect().position.y
-	# Pin stack bottom above the cat; grow upward as text streams in
-	var bottom_limit := cat_top - 16.0
-	if _hover_input.visible and _hover_input.modulate.a > 0:
-		bottom_limit = minf(bottom_limit, _hover_input.position.y - 8.0)
-	var y_pos := bottom_limit - bh
-	_floating_bubbles.position = Vector2(cx - bw / 2.0, y_pos)
+	if bh <= 0:
+		_floating_bubbles.position = Vector2(cx - bw / 2.0, limit_y)
+		return
+	_floating_bubbles.position = Vector2(cx - bw / 2.0, limit_y - bh)
 func _add_floating_bubble(role: String, text: String):
 	var bubble := MSG_BUBBLE.instantiate()
 	bubble.set_compact(true)
@@ -472,7 +542,7 @@ func _add_floating_bubble(role: String, text: String):
 		var first := _floating_bubbles.get_child(0)
 		_floating_bubbles.remove_child(first)
 		first.queue_free()
-	_position_floating_bubbles()
+	_schedule_stack_layout()
 
 
 func _append_floating_bubble(delta: String):
@@ -482,7 +552,7 @@ func _append_floating_bubble(delta: String):
 	var last_bubble = _floating_bubbles.get_child(last_idx)
 	if last_bubble.has_method("append_text"):
 		last_bubble.append_text(delta)
-	call_deferred("_position_floating_bubbles")
+	_schedule_stack_layout()
 
 func _clear_floating_bubbles():
 	for c in _floating_bubbles.get_children():
@@ -554,20 +624,21 @@ func _play_anim(anim: Anim):
 		Anim.IDLE:
 			_start_breathing()
 		Anim.TALKING:
-			_start_breathing(1.03, 0.4)
+			_start_breathing(BREATHE_PEAK_Y + 0.004, 1.2)
 		Anim.PETTED:
 			_anim_lock = true
 			var tw = create_tween()
-			tw.tween_property(cat, "scale", Vector2(0.85, 0.85), 0.1)
-			tw.tween_property(cat, "scale", Vector2(1.05, 1.05), 0.12)
-			tw.tween_property(cat, "scale", Vector2(1.0, 1.0), 0.15)
+			tw.tween_method(_set_cat_breathe, 1.0, 0.97, 0.1)
+			tw.tween_method(_set_cat_breathe, 0.97, BREATHE_PEAK_Y + 0.01, 0.12)
+			tw.tween_method(_set_cat_breathe, BREATHE_PEAK_Y + 0.01, 1.0, 0.15)
 			tw.tween_callback(func(): _anim_lock = false; _play_anim(Anim.IDLE))
 
 
-func _start_breathing(peak: float = 1.05, period: float = 1.5):
+func _start_breathing(peak_y: float = BREATHE_PEAK_Y, period: float = BREATHE_PERIOD):
+	_set_cat_breathe(1.0)
 	_breathe_tween = create_tween().set_loops()
-	_breathe_tween.tween_property(cat, "scale", Vector2(peak, peak), period).set_ease(Tween.EASE_IN_OUT)
-	_breathe_tween.tween_property(cat, "scale", Vector2(1.0, 1.0), period).set_ease(Tween.EASE_IN_OUT)
+	_breathe_tween.tween_method(_set_cat_breathe, 1.0, peak_y, period).set_ease(Tween.EASE_IN_OUT)
+	_breathe_tween.tween_method(_set_cat_breathe, peak_y, 1.0, period).set_ease(Tween.EASE_IN_OUT)
 
 
 # ============================================================
@@ -577,7 +648,7 @@ func _start_breathing(peak: float = 1.05, period: float = 1.5):
 func _show_bubble(text: String):
 	bubble.text = text
 	speech_bubble.show()
-	_position_bubble.call_deferred()
+	_schedule_stack_layout()
 	var t = create_tween()
 	t.tween_interval(5.0)
 	t.tween_callback(func(): speech_bubble.hide())
@@ -588,10 +659,11 @@ func _position_bubble():
 	var cx := _cat_center().x
 	var bw := speech_bubble.size.x
 	var bh := speech_bubble.size.y
-	var bottom_limit := _cat_rect().position.y - 16.0
-	if _hover_input.visible and _hover_input.modulate.a > 0:
-		bottom_limit = minf(bottom_limit, _hover_input.position.y - 8.0)
-	speech_bubble.position = Vector2(cx - bw / 2.0, bottom_limit - bh)
+	speech_bubble.position = Vector2(cx - bw / 2.0, _bubble_bottom_limit() - bh)
+
+
+func _now_timestamp() -> String:
+	return Time.get_datetime_string_from_system(false, true)
 func _input(event):
 	if event is InputEventMouseButton:
 		if event.button_index == MOUSE_BUTTON_LEFT:
