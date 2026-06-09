@@ -1,0 +1,39 @@
+[gd_scene format=3 uid="uid://dbbyngdmbina0"]
+
+[ext_resource type="Script" uid="uid://cghv16po3jmy6" path="res://scripts/main.gd" id="1_main"]
+[ext_resource type="Script" uid="uid://dj2a6p2sxhcb0" path="res://scripts/circular_menu.gd" id="2_cm"]
+
+[node name="Main" type="Control" unique_id=220799838]
+layout_mode = 3
+anchor_left = -0.11400001
+anchor_top = -0.113000005
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = -41.8
+offset_top = -57.449997
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_main")
+
+[node name="CatTexture" type="TextureRect" parent="." unique_id=348314989]
+layout_mode = 0
+offset_left = 86.0
+offset_right = 214.0
+offset_bottom = 128.0
+expand_mode = 1
+stretch_mode = 5
+
+[node name="BubbleLabel" type="Label" parent="." unique_id=1314465678]
+visible = false
+layout_mode = 0
+offset_left = 30.0
+offset_top = -60.0
+offset_right = 270.0
+offset_bottom = -10.0
+text = "喵~"
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="CircularMenu" type="Control" parent="." unique_id=1984973640]
+anchors_preset = 0
+script = ExtResource("2_cm")

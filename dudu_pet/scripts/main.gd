@@ -9,6 +9,7 @@ extends Control
 @onready var bubble: Label = $SpeechBubble/BubbleLabel
 @onready var circ_menu: Control = $CircularMenu
 var chat_panel: ChatPanel = null
+var settings_panel: SettingsPanel = null
 
 # Window
 var dragging: bool = false
@@ -67,6 +68,7 @@ func _ready():
 	_create_hover_input()
 	_create_floating_bubbles()
 	_setup_chat_panel()
+	_setup_settings_panel()
 	_apply_ui_scale_to_children()
 	_apply_layer_order()
 	_wire_signals()
@@ -121,6 +123,8 @@ func _apply_layer_order() -> void:
 	var ordered: Array[Node] = [cat, speech_bubble, _floating_bubbles, _hover_input, circ_menu]
 	if chat_panel:
 		ordered.append(chat_panel)
+	if settings_panel:
+		ordered.append(settings_panel)
 	for i in ordered.size():
 		move_child(ordered[i], i)
 
@@ -131,8 +135,19 @@ func _setup_chat_panel():
 	add_child(chat_panel)
 
 
+func _setup_settings_panel():
+	var scene = load("res://scenes/settings_panel.tscn")
+	settings_panel = scene.instantiate()
+	add_child(settings_panel)
+	settings_panel.setting_changed.connect(func(key: String, value):
+		_send_ws({"type": "settings.set", "key": key, "value": value})
+	)
+	settings_panel.close_requested.connect(func(): settings_panel.hide())
+
+
 func _apply_ui_scale_to_children() -> void:
 	chat_panel.apply_ui_scale()
+	settings_panel.apply_ui_scale()
 	circ_menu.apply_ui_scale()
 	_schedule_stack_layout()
 
@@ -343,17 +358,17 @@ func _on_hover_text_input(event: InputEvent):
 # ============================================================
 
 func _on_menu_action(action: String):
-		match action:
-			"chat_history":
-				_open_chat_history()
-			"reminders":
-				_show_bubble("定时提醒功能即将上线~")
-			"explore":
-				_send_chat("嘟嘟想做点什么")
-			"fortune":
-				_send_chat("今日运势")
-			"settings":
-				_show_bubble("设置功能即将上线~")
+	match action:
+		"chat_history":
+			_open_chat_history()
+		"reminders":
+			_show_bubble("定时提醒功能即将上线~")
+		"explore":
+			_send_chat("嘟嘟想做点什么")
+		"fortune":
+			_send_chat("今日运势")
+		"settings":
+			_open_settings()
 
 
 func _open_circular_menu():
@@ -393,6 +408,11 @@ func _open_chat_history():
 		chat_panel.add_messages(_history_cache)
 	_send_ws({"type": "history.request"})
 
+
+
+func _open_settings():
+	settings_panel.open(_cat_center())
+	_send_ws({"type": "settings.get"})
 
 func _show_floating_bubbles():
 	_floating_bubbles.show()
@@ -475,6 +495,10 @@ func _handle_ws_messages():
 			"history.data":
 				_load_history_into_panel(msg["payload"]["messages"])
 
+			"settings.data", "settings.updated":
+				if settings_panel:
+					settings_panel.populate(msg["payload"])
+
 			_:
 				print("Unhandled: ", msg["type"])
 
@@ -507,6 +531,8 @@ func _update_passthrough():
 		rects.append(_floating_bubbles.get_global_rect())
 	if chat_panel.visible:
 		rects.append(chat_panel.get_global_rect())
+	if settings_panel and settings_panel.visible:
+		rects.append(settings_panel.get_global_rect())
 	if circ_menu.is_open():
 		for r in circ_menu.get_button_global_rects():
 			rects.append(r)
@@ -669,7 +695,7 @@ func _input(event):
 		if event.button_index == MOUSE_BUTTON_LEFT:
 			if event.pressed:
 				var mp := get_global_mouse_position()
-				var on_panel: bool = chat_panel.visible and chat_panel.is_dragging_title()
+				var on_panel: bool = (chat_panel.visible and chat_panel.is_dragging_title()) or (settings_panel.visible and settings_panel.is_dragging_title())
 				if not on_panel and cat.get_global_rect().has_point(mp):
 					dragging = true
 					drag_mouse_start = DisplayServer.mouse_get_position()

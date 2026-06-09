@@ -17,6 +17,7 @@ from websockets.asyncio.server import serve
 from context import build_messages
 from llm_client import LLMClient
 from memory import MemoryManager
+from settings import SettingsManager
 
 # ── .env loader (no extra dependencies) ──
 
@@ -52,6 +53,7 @@ _window_visible = True
 _loop = None
 _llm: LLMClient | None = None
 _memory = MemoryManager()
+_settings = SettingsManager()
 
 
 # ── Tray Icon ──
@@ -151,6 +153,17 @@ async def handler(websocket):
                 case "ping":
                     await _send("pong", {})
 
+                case "settings.get":
+                    await _send("settings.data", _settings.get_all())
+
+                case "settings.set":
+                    key = (msg.get("key") or "").strip()
+                    if key and "value" in msg:
+                        _settings.set(key, msg["value"])
+                        if key.startswith("chat."):
+                            _llm = _make_llm()
+                        await _send("settings.updated", _settings.get_all())
+
                 case _:
                     print(f"[?] Unknown msg type: {msg_type}")
 
@@ -228,6 +241,17 @@ async def _broadcast(msg_type: str, payload: dict):
     await _send(msg_type, payload)
 
 
+def _make_llm() -> LLMClient | None:
+    if not API_KEY:
+        return None
+    return LLMClient(
+        api_key=API_KEY,
+        base_url=API_BASE,
+        model=_settings.get("chat.model") or MODEL,
+        temperature=_settings.get("chat.temperature") or 0.8,
+    )
+
+
 # ── Main ──
 
 async def main():
@@ -237,12 +261,8 @@ async def main():
 
     # Init LLM client
     if API_KEY:
-        _llm = LLMClient(
-            api_key=API_KEY,
-            base_url=API_BASE,
-            model=MODEL,
-        )
-        print(f"[LLM] DeepSeek ready: {MODEL} @ {API_BASE}")
+        _llm = _make_llm()
+        print(f"[LLM] DeepSeek ready: {_settings.get('chat.model')} @ {API_BASE}")
     else:
         print("[LLM] No DEEPSEEK_API_KEY set — chat will show placeholder")
 

@@ -1,0 +1,21 @@
+{
+  "ui": {
+    "scale_multiplier": 0.85
+  },
+  "chat": {
+    "model": "deepseek-chat",
+    "temperature": 0.8
+  },
+  "pomodoro": {
+    "work_minutes": 25,
+    "break_minutes": 5,
+    "long_break_minutes": 15,
+    "long_break_interval": 4
+  },
+  "reminders": {
+    "water_enabled": true,
+    "water_interval_minutes": 60,
+    "stretch_enabled": true,
+    "stretch_interval_minutes": 15
+  }
+}
