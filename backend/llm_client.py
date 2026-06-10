@@ -11,8 +11,8 @@ import httpx
 log = logging.getLogger("dudu.llm")
 
 # DeepSeek defaults — override via constructor or env
-DEFAULT_BASE_URL = "https://api.deepseek.com/v1"
-DEFAULT_MODEL = "deepseek-chat"
+DEFAULT_BASE_URL = "https://api.deepseek.com"
+DEFAULT_MODEL = "deepseek-v4-flash"
 DEFAULT_MAX_TOKENS = 1024
 DEFAULT_TEMPERATURE = 0.9
 
@@ -38,7 +38,10 @@ class LLMClient:
     # ── streaming ──
 
     async def stream_chat(
-        self, messages: list[dict]
+        self,
+        messages: list[dict],
+        thinking: bool = False,
+        model: str | None = None,
     ) -> AsyncGenerator[str, None]:
         """
         Stream chat completion chunks.
@@ -50,12 +53,14 @@ class LLMClient:
             "Accept": "text/event-stream",
         }
         payload = {
-            "model": self._model,
+            "model": model or self._model,
             "messages": messages,
             "max_tokens": self._max_tokens,
             "temperature": self._temperature,
             "stream": True,
         }
+        if thinking:
+            payload["thinking"] = {"type": "enabled"}
 
         async with httpx.AsyncClient(timeout=120.0) as client:
             async with client.stream(
@@ -82,7 +87,7 @@ class LLMClient:
                             choices = chunk.get("choices", [])
                             if choices:
                                 delta = choices[0].get("delta", {})
-                                content = delta.get("content", "")
+                                content = delta.get("content") or ""
                                 if content:
                                     yield content
                         except json.JSONDecodeError:

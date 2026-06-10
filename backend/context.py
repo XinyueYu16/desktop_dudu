@@ -8,6 +8,7 @@ from calendar import day_name
 
 from memory import MemoryManager
 from prompts import build_system_prompt
+from settings import SettingsManager
 
 # Default: keep the most recent 20 messages (≈10 turns) in context
 DEFAULT_CONTEXT_MESSAGES = 20
@@ -45,34 +46,39 @@ def _content_for_api(entry: dict) -> str:
 
 def build_messages(
     user_text: str,
-    memory: MemoryManager,
-    system_extra: str = "",
+    memory: MemoryManager | None,
+    settings: SettingsManager,
+    mode: str = "default",
     context_messages: int = DEFAULT_CONTEXT_MESSAGES,
+    use_memory: bool = True,
 ) -> list[dict]:
     """
     Assemble the messages list for the chat API.
 
     Order:
-      1. system  — DuDu persona + optional mode append
+      1. system  — DuDu persona (+ optional mode append from settings)
       2. recent context from memory (user/assistant pairs)
       3. current user_text as user
+
+    mode: "default" | "fortune" | "explore"
 
     Returns list of {"role": str, "content": str}.
     """
     ctx_count = min(max(1, context_messages), MAX_CONTEXT_MESSAGES)
 
     messages: list[dict] = [
-        {"role": "system", "content": build_system_prompt(system_extra)}
+        {"role": "system", "content": build_system_prompt(settings, mode)}
     ]
 
     # Recent memory context — with timestamp injection for user messages
-    recent = memory.load_recent(ctx_count)
-    for entry in recent:
-        role = entry.get("role", "")
-        if role in ("user", "assistant"):
-            content = _content_for_api(entry)
-            if content:
-                messages.append({"role": role, "content": content})
+    if use_memory and memory is not None:
+        recent = memory.load_recent(ctx_count)
+        for entry in recent:
+            role = entry.get("role", "")
+            if role in ("user", "assistant"):
+                content = _content_for_api(entry)
+                if content:
+                    messages.append({"role": role, "content": content})
 
     # Current user message — with timestamp
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

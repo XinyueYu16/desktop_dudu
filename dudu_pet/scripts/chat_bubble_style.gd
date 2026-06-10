@@ -28,6 +28,15 @@ static func apply_to_panel(panel: PanelContainer, label: Label, role: String, sc
 	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 
 
+static func apply_to_rich_label(panel: PanelContainer, label: RichTextLabel, role: String, scaled: bool = true) -> void:
+	panel.add_theme_stylebox_override("panel", make_stylebox(role, scaled))
+	label.add_theme_color_override("default_color", font_color(role))
+	var sz := _dimi(14, scaled)
+	for key in ["normal_font_size", "bold_font_size", "italics_font_size", "bold_italics_font_size"]:
+		label.add_theme_font_size_override(key, sz)
+	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+
+
 static func make_input_stylebox(scaled: bool = true) -> StyleBoxFlat:
 	var sb := StyleBoxFlat.new()
 	var r := _dimi(12, scaled)

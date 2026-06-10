@@ -31,9 +31,11 @@ var _breathe_tween: Tween = null
 # Hover input
 var _hover_input: PanelContainer = null
 var _hover_text: TextEdit = null
-var _hover_tween: Tween = null
 var _hovering: bool = false
-var _hover_shown_at: int = 0
+var _stack_shown_at: int = 0
+var _stack_tween: Tween = null
+var _stack_hide_gen: int = 0
+var _chat_session_active: bool = false
 
 # Streaming state
 var _streaming_bubble: bool = false
@@ -50,11 +52,29 @@ const INPUT_GAP_ABOVE_CAT := 12.0
 const BUBBLE_GAP_ABOVE_INPUT := 14.0
 const BREATHE_PEAK_Y := 1.012
 const BREATHE_PERIOD := 2.6
+const STACK_SHOW_DELAY := 0.5
+const STACK_MIN_VISIBLE_MS := 2000
+const CHAT_REPLY_TIMEOUT := 90.0
 
 var _cat_base_height: float = 128.0
 var _cat_center_x: float = 0.0
 var _cat_bottom: float = 0.0
 var _stack_layout_gen: int = 0
+var _ws_was_open: bool = false
+var _settings_save_pending: bool = false
+var _chat_wait_gen: int = 0
+# Match backend/settings.py DEFAULTS until settings.data arrives on connect
+var _chat_toggles: Dictionary = {
+	"thinking_enabled": true,
+	"use_memory": true,
+	"record_memory": true,
+}
+
+const _TOGGLE_SETTING_KEYS := {
+	"toggle_thinking": "thinking_enabled",
+	"toggle_memory": "use_memory",
+	"toggle_record": "record_memory",
+}
 
 
 # ============================================================
@@ -119,7 +139,7 @@ func _bubble_bottom_limit() -> float:
 
 
 func _apply_layer_order() -> void:
-	# Back → front: cat, speech, bubbles, input (input must stay above bubbles)
+	# Back → front: cat, speech, bubbles, input
 	var ordered: Array[Node] = [cat, speech_bubble, _floating_bubbles, _hover_input, circ_menu]
 	if chat_panel:
 		ordered.append(chat_panel)
@@ -140,15 +160,45 @@ func _setup_settings_panel():
 	settings_panel = scene.instantiate()
 	add_child(settings_panel)
 	settings_panel.setting_changed.connect(func(key: String, value):
-		_send_ws({"type": "settings.set", "key": key, "value": value})
+		if key == "ui.scale_multiplier":
+			UiConfig.set_user_multiplier(float(value))
+			UiConfig.persist_multiplier()
+			_refresh_ui_scale()
 	)
+	settings_panel.save_requested.connect(_on_settings_save)
+	settings_panel.clear_history_requested.connect(_on_clear_chat_history)
 	settings_panel.close_requested.connect(func(): settings_panel.hide())
 
 
+func _on_settings_save(pending: Dictionary) -> void:
+	if pending.is_empty():
+		return
+	if ws.get_ready_state() != WebSocketPeer.STATE_OPEN:
+		settings_panel.mark_save_failed()
+		return
+	_settings_save_pending = true
+	_send_ws({"type": "settings.set_bulk", "updates": pending})
+
+
 func _apply_ui_scale_to_children() -> void:
-	chat_panel.apply_ui_scale()
-	settings_panel.apply_ui_scale()
-	circ_menu.apply_ui_scale()
+	_refresh_ui_scale()
+
+
+func _refresh_ui_scale() -> void:
+	_layout_cat_in_window()
+	_style_speech_bubble()
+	if _hover_input:
+		_hover_input.add_theme_stylebox_override("panel", ChatBubbleStyle.make_input_stylebox(true))
+		_hover_text.custom_minimum_size = Vector2(ChatBubbleStyle.content_min_width(), 0)
+		_hover_text.add_theme_font_size_override("font_size", UiConfig.si(14))
+	if _floating_bubbles:
+		_floating_bubbles.add_theme_constant_override("separation", UiConfig.si(6))
+	if chat_panel:
+		chat_panel.apply_ui_scale()
+	if settings_panel:
+		settings_panel.apply_ui_scale()
+	if circ_menu:
+		circ_menu.apply_ui_scale()
 	_schedule_stack_layout()
 
 
@@ -156,6 +206,7 @@ func _setup_window():
 	var screen_idx := DisplayServer.window_get_current_screen()
 	var screen_size := DisplayServer.screen_get_size(screen_idx)
 	var screen_pos := DisplayServer.screen_get_position(screen_idx)
+	UiConfig.bootstrap_multiplier()
 	UiConfig.init_from_screen(screen_size)
 	get_window().size = UiConfig.window_size
 	get_window().position = screen_pos + (screen_size - UiConfig.window_size) / 2
@@ -234,8 +285,7 @@ func _create_hover_input():
 	_hover_input.add_child(_hover_text)
 	add_child(_hover_input)
 	_hover_input.mouse_entered.connect(func(): _hovering = true)
-	_hover_input.mouse_exited.connect(_on_cat_mouse_exit)
-
+	_hover_input.mouse_exited.connect(_on_stack_mouse_exit)
 
 
 func _create_floating_bubbles():
@@ -245,6 +295,8 @@ func _create_floating_bubbles():
 	_floating_bubbles.add_theme_constant_override("separation", UiConfig.si(6))
 	_floating_bubbles.hide()
 	_floating_bubbles.modulate.a = 0
+	_floating_bubbles.mouse_entered.connect(func(): _hovering = true)
+	_floating_bubbles.mouse_exited.connect(_on_stack_mouse_exit)
 	add_child(_floating_bubbles)
 func _transparent_stylebox() -> StyleBoxEmpty:
 	return StyleBoxEmpty.new()
@@ -252,7 +304,9 @@ func _transparent_stylebox() -> StyleBoxEmpty:
 
 func _wire_signals():
 	circ_menu.item_selected.connect(_on_menu_action)
+	circ_menu.toggle_changed.connect(_on_menu_toggle)
 	chat_panel.message_sent.connect(_on_chat_send)
+	chat_panel.message_delete_requested.connect(_on_message_delete)
 	chat_panel.close_requested.connect(func(): chat_panel.hide())
 	cat.mouse_entered.connect(_on_cat_mouse_enter)
 	cat.mouse_exited.connect(_on_cat_mouse_exit)
@@ -264,47 +318,121 @@ func _wire_signals():
 
 func _on_cat_mouse_enter():
 	_hovering = true
-	if _hover_tween and _hover_tween.is_valid():
-		_hover_tween.kill()
-	# Wait 1 second before showing
-	_hover_tween = create_tween()
-	_hover_tween.tween_interval(0.5)
-	_hover_tween.tween_callback(_show_hover_input)
+	_stack_hide_gen += 1
+	_cancel_stack_tween()
+	_stack_tween = create_tween()
+	_stack_tween.tween_interval(STACK_SHOW_DELAY)
+	_stack_tween.tween_callback(_show_hover_stack)
 
 
 func _on_cat_mouse_exit():
 	_hovering = false
-	# Minimum 2s display; then hide after mouse leaves both cat and input
-	var elapsed := Time.get_ticks_msec() - _hover_shown_at
-	var grace := 0.3 if elapsed >= 2000 else (2000 - elapsed) / 1000.0 + 0.3
+	_schedule_stack_hide()
+
+
+func _on_stack_mouse_exit():
+	_hovering = false
+	_schedule_stack_hide()
+
+
+func _pointer_in_stack() -> bool:
+	if _hovering:
+		return true
+	if cat.get_global_rect().has_point(get_global_mouse_position()):
+		return true
+	var mp := get_global_mouse_position()
+	if _hover_input.visible and _hover_input.modulate.a > 0.01:
+		if _hover_input.get_global_rect().has_point(mp):
+			return true
+	if _floating_bubbles.visible and _floating_bubbles.modulate.a > 0.01:
+		if _floating_bubbles.get_global_rect().has_point(mp):
+			return true
+	return false
+
+
+func _schedule_stack_hide() -> void:
+	_stack_hide_gen += 1
+	var gen := _stack_hide_gen
+	var elapsed := Time.get_ticks_msec() - _stack_shown_at
+	var grace := 0.3 if elapsed >= STACK_MIN_VISIBLE_MS else (STACK_MIN_VISIBLE_MS - elapsed) / 1000.0 + 0.3
 	await get_tree().create_timer(grace).timeout
-	if not _hovering and not _hover_input.get_global_rect().has_point(get_global_mouse_position()):
-		_hide_hover_input()
-
-
-func _show_hover_input():
-	_hover_shown_at = Time.get_ticks_msec()
-	if not _hovering:
+	if gen != _stack_hide_gen:
 		return
+	if _chat_session_active:
+		return
+	if _pointer_in_stack():
+		return
+	_hide_hover_stack()
+
+
+func _cancel_stack_tween() -> void:
+	if _stack_tween and _stack_tween.is_valid():
+		_stack_tween.kill()
+	_stack_tween = null
+
+
+func _show_hover_stack():
+	if not _hovering and not _chat_session_active:
+		return
+	_stack_shown_at = Time.get_ticks_msec()
 	_position_hover_input()
-	_hover_input.modulate.a = 0
-	_hover_input.show()
+	_schedule_stack_layout()
+	_cancel_stack_tween()
+	var tw := create_tween().set_parallel(true)
+	if _hovering:
+		_hover_input.show()
+		_hover_input.modulate.a = 0.0
+		tw.tween_property(_hover_input, "modulate:a", 1.0, 0.2)
 	if _floating_bubbles.get_child_count() > 0:
 		_floating_bubbles.show()
-		_floating_bubbles.modulate.a = 1
-	_schedule_stack_layout()
-	var tw = create_tween()
-	tw.tween_property(_hover_input, "modulate:a", 1.0, 0.2)
-func _hide_hover_input():
-	if _hover_tween and _hover_tween.is_valid():
-		_hover_tween.kill()
-	_hover_tween = create_tween()
-	_hover_tween.tween_property(_hover_input, "modulate:a", 0.0, 0.15)
-	_hover_tween.tween_callback(func():
+		if _floating_bubbles.modulate.a < 0.99:
+			tw.tween_property(_floating_bubbles, "modulate:a", 1.0, 0.2).from(0.0)
+	_sync_bubbles_mouse_filter()
+
+
+func _hide_hover_stack():
+	_cancel_stack_tween()
+	var tw := create_tween().set_parallel(true)
+	if _hover_input.visible:
+		tw.tween_property(_hover_input, "modulate:a", 0.0, 0.15)
+	if _floating_bubbles.visible:
+		tw.tween_property(_floating_bubbles, "modulate:a", 0.0, 0.15)
+	tw.chain().tween_callback(_on_stack_hidden)
+
+
+func _hide_input_only():
+	_cancel_stack_tween()
+	var tw := create_tween()
+	tw.tween_property(_hover_input, "modulate:a", 0.0, 0.15)
+	tw.tween_callback(func():
 		_hover_input.hide()
-		if _floating_bubbles.get_child_count() > 0 or speech_bubble.visible:
-			_schedule_stack_layout()
+		_hover_input.modulate.a = 0.0
+		_schedule_stack_layout()
 	)
+
+
+func _on_stack_hidden():
+	_hover_input.hide()
+	_hover_input.modulate.a = 0.0
+	_floating_bubbles.hide()
+	_floating_bubbles.modulate.a = 0.0
+	_sync_bubbles_mouse_filter()
+	_schedule_stack_layout()
+
+
+func _sync_bubbles_mouse_filter() -> void:
+	var interactive := _floating_bubbles.get_child_count() > 0 and _floating_bubbles.visible
+	_floating_bubbles.mouse_filter = Control.MOUSE_FILTER_STOP if interactive else Control.MOUSE_FILTER_IGNORE
+
+
+func _ensure_bubbles_visible() -> void:
+	if _floating_bubbles.get_child_count() == 0:
+		return
+	if not _floating_bubbles.visible or _floating_bubbles.modulate.a < 0.99:
+		_floating_bubbles.show()
+		_floating_bubbles.modulate.a = 1.0
+		_sync_bubbles_mouse_filter()
+		_schedule_stack_layout()
 
 
 func _position_hover_input():
@@ -349,13 +477,27 @@ func _on_hover_text_input(event: InputEvent):
 			if not text.is_empty():
 				_send_chat(text)
 				_hover_text.text = ""
-				_hide_hover_input()
+				_hide_input_only()
 			get_viewport().set_input_as_handled()
 
 
 # ============================================================
 # Circular menu
 # ============================================================
+
+func _on_menu_toggle(action: String, enabled: bool) -> void:
+	var field: String = _TOGGLE_SETTING_KEYS.get(action, "")
+	if field.is_empty():
+		return
+	_chat_toggles[field] = enabled
+	match action:
+		"toggle_thinking":
+			_send_ws({"type": "settings.set", "key": "chat.thinking_enabled", "value": enabled})
+		"toggle_memory":
+			_send_ws({"type": "settings.set", "key": "chat.use_memory", "value": enabled})
+		"toggle_record":
+			_send_ws({"type": "settings.set", "key": "chat.record_memory", "value": enabled})
+
 
 func _on_menu_action(action: String):
 	match action:
@@ -364,14 +506,20 @@ func _on_menu_action(action: String):
 		"reminders":
 			_show_bubble("定时提醒功能即将上线~")
 		"explore":
-			_send_chat("嘟嘟想做点什么")
+			_send_chat("嘟嘟想做点什么", false, "explore")
 		"fortune":
-			_send_chat("今日运势")
+			_send_chat("今日运势", false, "fortune")
 		"settings":
 			_open_settings()
+		"quit":
+			_shutdown()
 
 
-func _open_circular_menu():
+func _open_circular_menu() -> void:
+	if circ_menu.is_open():
+		circ_menu.close()
+		return
+	_sync_circ_menu_toggles()
 	circ_menu.open(_cat_center())
 
 
@@ -379,26 +527,83 @@ func _open_circular_menu():
 # Chat
 # ============================================================
 
-func _send_chat(text: String, panel_user_added: bool = false):
+func _send_chat(text: String, panel_user_added: bool = false, mode: String = ""):
 	if not panel_user_added:
 		chat_panel.add_message("user", text, _now_timestamp())
-	_send_ws({
-		"type": "user.chat",
-		"text": text,
-	})
+	var payload := {"type": "user.chat", "text": text}
+	if not mode.is_empty():
+		payload["mode"] = mode
+	payload["thinking"] = bool(_chat_toggles["thinking_enabled"])
+	payload["use_memory"] = bool(_chat_toggles["use_memory"])
+	payload["record_memory"] = bool(_chat_toggles["record_memory"])
+	_send_ws(payload)
 	_play_anim(Anim.TALKING)
 	_streaming_bubble = true
 	_stream_buffer = ""
 	speech_bubble.hide()
+	_chat_session_active = true
+	_hide_input_only()
 	# Only the current turn — never replay history or prior session bubbles
 	_clear_floating_bubbles()
-	_show_floating_bubbles()
+	_ensure_bubbles_visible()
 	_add_floating_bubble("user", text)
 	_floating_assistant_added = false
+	_start_chat_reply_timeout()
+
+
+func _start_chat_reply_timeout() -> void:
+	_chat_wait_gen += 1
+	var gen := _chat_wait_gen
+	await get_tree().create_timer(CHAT_REPLY_TIMEOUT).timeout
+	if gen != _chat_wait_gen or not _chat_session_active:
+		return
+	_on_chat_reply_failed("等太久啦…检查一下网络或 API 设置喵")
+
+
+func _cancel_chat_reply_timeout() -> void:
+	_chat_wait_gen += 1
+
+
+func _on_chat_reply_failed(message: String) -> void:
+	_cancel_chat_reply_timeout()
+	_stream_buffer = ""
+	_streaming_bubble = false
+	_chat_session_active = false
+	_ensure_bubbles_visible()
+	if not _floating_assistant_added:
+		_add_floating_bubble("assistant", message)
+		_floating_assistant_added = true
+	else:
+		_append_floating_bubble(message)
+	_stack_shown_at = Time.get_ticks_msec()
+	_schedule_stack_layout()
+	_play_anim(Anim.IDLE)
 
 
 func _on_chat_send(text: String):
 	_send_chat(text, true)
+
+
+func _on_clear_chat_history() -> void:
+	_send_ws({"type": "history.clear"})
+	_history_cache.clear()
+	chat_panel.clear_messages()
+	_clear_floating_bubbles()
+
+
+func _on_message_delete(timestamp: String) -> void:
+	if timestamp.is_empty():
+		return
+	_send_ws({"type": "history.delete", "timestamp": timestamp})
+	_remove_history_entry(timestamp)
+	chat_panel.remove_message_by_timestamp(timestamp)
+
+
+func _remove_history_entry(timestamp: String) -> void:
+	for i in range(_history_cache.size() - 1, -1, -1):
+		if _history_cache[i].get("timestamp", "") == timestamp:
+			_history_cache.remove_at(i)
+			return
 
 
 func _open_chat_history():
@@ -414,10 +619,21 @@ func _open_settings():
 	settings_panel.open(_cat_center())
 	_send_ws({"type": "settings.get"})
 
-func _show_floating_bubbles():
-	_floating_bubbles.show()
-	_floating_bubbles.modulate.a = 1.0
-	_schedule_stack_layout()
+
+func _apply_chat_toggles(settings: Dictionary) -> void:
+	var chat: Variant = settings.get("chat", {})
+	if not chat is Dictionary:
+		return
+	_chat_toggles["thinking_enabled"] = bool(chat.get("thinking_enabled", true))
+	_chat_toggles["use_memory"] = bool(chat.get("use_memory", true))
+	_chat_toggles["record_memory"] = bool(chat.get("record_memory", true))
+	_sync_circ_menu_toggles()
+
+
+func _sync_circ_menu_toggles() -> void:
+	circ_menu.set_toggle("toggle_thinking", bool(_chat_toggles["thinking_enabled"]))
+	circ_menu.set_toggle("toggle_memory", bool(_chat_toggles["use_memory"]))
+	circ_menu.set_toggle("toggle_record", bool(_chat_toggles["record_memory"]))
 
 
 # ============================================================
@@ -430,6 +646,8 @@ func _connect_ws():
 
 func _process(_delta):
 	ws.poll()
+	var ws_open := ws.get_ready_state() == WebSocketPeer.STATE_OPEN
+	_ws_was_open = ws_open
 	_handle_ws_messages()
 	_update_passthrough()
 	if ws.get_ready_state() == WebSocketPeer.STATE_CLOSED:
@@ -453,8 +671,6 @@ func _handle_ws_messages():
 			"assistant.chunk":
 				var delta = msg["payload"].get("delta", "")
 				_stream_buffer += delta
-				# Floating message bubbles only (same style as 魔法日记)
-				# Update chat panel
 				if chat_panel.visible:
 					if _streaming_bubble:
 						chat_panel.add_message("assistant", delta, _now_timestamp())
@@ -462,20 +678,30 @@ func _handle_ws_messages():
 					else:
 						chat_panel.append_last(delta)
 
-				_show_floating_bubbles()
+				_ensure_bubbles_visible()
 				if not _floating_assistant_added:
 					_add_floating_bubble("assistant", delta)
 					_floating_assistant_added = true
 				else:
 					_append_floating_bubble(delta)
 			"assistant.done":
+				_cancel_chat_reply_timeout()
 				var full = msg["payload"].get("full_text", _stream_buffer)
+				if full.is_empty():
+					full = "唔...嘟嘟一时说不出话，再试一次喵~"
+				if _stream_buffer.is_empty() and not full.is_empty():
+					_ensure_bubbles_visible()
+					_add_floating_bubble("assistant", full)
 				if chat_panel.visible and _stream_buffer != "":
-					pass  # already appended via chunks
+					pass
 				_stream_buffer = ""
 				_streaming_bubble = false
 				_floating_assistant_added = false
+				_chat_session_active = false
+				_stack_shown_at = Time.get_ticks_msec()
 				_schedule_stack_layout()
+				if not _pointer_in_stack():
+					_schedule_stack_hide()
 				_play_anim(Anim.IDLE)
 
 			"window.hide":
@@ -495,9 +721,35 @@ func _handle_ws_messages():
 			"history.data":
 				_load_history_into_panel(msg["payload"]["messages"])
 
-			"settings.data", "settings.updated":
+			"history.cleared":
+				_history_cache.clear()
+				if chat_panel.visible:
+					chat_panel.clear_messages()
+				_clear_floating_bubbles()
+
+			"history.deleted":
+				var ts: String = msg["payload"].get("timestamp", "")
+				if bool(msg["payload"].get("ok", false)) and not ts.is_empty():
+					_remove_history_entry(ts)
+					chat_panel.remove_message_by_timestamp(ts)
+
+			"settings.data":
+				var prev_scale := UiConfig.user_multiplier
 				if settings_panel:
 					settings_panel.populate(msg["payload"])
+				UiConfig.persist_multiplier()
+				# Don't clobber in-menu toggle edits or relayout while the card is open.
+				if not circ_menu.is_open():
+					_apply_chat_toggles(msg["payload"])
+				if not is_equal_approx(prev_scale, UiConfig.user_multiplier):
+					_refresh_ui_scale()
+
+			"settings.updated":
+				# Toggle state is optimistic-local; echo would race and break menu styling.
+				if _settings_save_pending:
+					_settings_save_pending = false
+					if settings_panel:
+						settings_panel.mark_saved()
 
 			_:
 				print("Unhandled: ", msg["type"])
@@ -534,11 +786,16 @@ func _update_passthrough():
 	if settings_panel and settings_panel.visible:
 		rects.append(settings_panel.get_global_rect())
 	if circ_menu.is_open():
-		for r in circ_menu.get_button_global_rects():
+		for r in circ_menu.get_passthrough_rects():
 			rects.append(r)
+		_update_passthrough_polygon(rects)
+		return
 	if rects.is_empty():
 		return
-	# Merge all rects into one bounding box
+	_update_passthrough_polygon(rects)
+
+
+func _update_passthrough_polygon(rects: Array[Rect2]) -> void:
 	var merged := rects[0]
 	for i in range(1, rects.size()):
 		merged = merged.merge(rects[i])

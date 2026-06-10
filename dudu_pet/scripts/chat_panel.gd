@@ -6,6 +6,7 @@ extends Control
 
 signal message_sent(text: String)
 signal close_requested
+signal message_delete_requested(timestamp: String)
 
 const BASE_SIZE := Vector2(340, 420)
 const MSG_BUBBLE = preload("res://scenes/message_bubble.tscn")
@@ -31,13 +32,19 @@ var _drag_offset: Vector2 = Vector2.ZERO
 
 func _ready():
 	hide()
+	clip_contents = false
 	mouse_filter = Control.MOUSE_FILTER_STOP
 	apply_ui_scale()
+	panel_bg.clip_contents = false
+	input_container.clip_contents = false
 	title_bar.mouse_filter = Control.MOUSE_FILTER_STOP
 	title_bar.gui_input.connect(_on_title_bar_input)
 	input_field.text_changed.connect(_on_input_changed)
 	send_btn.pressed.connect(_send_message)
 	close_btn.pressed.connect(func(): close_requested.emit(); hide())
+	var input_menu := input_field.get_menu()
+	if input_menu:
+		input_menu.popup_window = true
 
 
 func is_dragging_title() -> bool:
@@ -97,6 +104,7 @@ func _apply_style():
 	var icr := UiConfig.si(10)
 	# 滚动区域 — 透明，让奶油底色透出
 	message_scroll.add_theme_stylebox_override("panel", StyleBoxEmpty.new())
+	ACStyle.apply_vscroll_theme(message_scroll.get_v_scroll_bar())
 	isb.corner_radius_top_left = icr
 	isb.corner_radius_top_right = icr
 	isb.corner_radius_bottom_left = icr
@@ -114,20 +122,10 @@ func _apply_style():
 	input_field.placeholder_text = "说点什么..."
 	input_field.custom_minimum_size.y = UiConfig.s(36)
 
-	# 发送按钮 — 鼠尾草绿
-	send_btn.flat = true
-	var btn_sb := StyleBoxFlat.new()
-	btn_sb.bg_color = ACStyle.SAGE
-	btn_sb.corner_radius_top_left = UiConfig.si(8)
-	btn_sb.corner_radius_top_right = UiConfig.si(8)
-	btn_sb.corner_radius_bottom_left = UiConfig.si(8)
-	btn_sb.corner_radius_bottom_right = UiConfig.si(8)
-	send_btn.add_theme_stylebox_override("normal", btn_sb)
-	var btn_hover := btn_sb.duplicate() as StyleBoxFlat
-	btn_hover.bg_color = Color(ACStyle.SAGE.r, ACStyle.SAGE.g, ACStyle.SAGE.b, 0.8)
-	send_btn.add_theme_stylebox_override("hover", btn_hover)
-	send_btn.add_theme_font_size_override("font_size", UiConfig.si(13))
-	send_btn.add_theme_color_override("font_color", Color.WHITE)
+	# 发送按钮 — 空输入时仍可见，禁用态淡色底 + 棕字
+	send_btn.flat = false
+	send_btn.focus_mode = Control.FOCUS_NONE
+	_apply_send_button_style()
 	send_btn.custom_minimum_size = Vector2(UiConfig.s(52), UiConfig.s(36))
 
 	# 标题
@@ -153,7 +151,9 @@ func open(near_position: Vector2):
 func add_message(role: String, text: String, timestamp: String = ""):
 	var bubble := MSG_BUBBLE.instantiate()
 	message_list.add_child(bubble)
-	bubble.setup(role, text, timestamp if not timestamp.is_empty() else _now_timestamp())
+	var ts := timestamp if not timestamp.is_empty() else _now_timestamp()
+	bubble.setup(role, text, ts)
+	_connect_bubble_signals(bubble)
 	_scroll_to_bottom.call_deferred()
 
 
@@ -166,7 +166,25 @@ func add_messages(messages: Array):
 		var bubble := MSG_BUBBLE.instantiate()
 		message_list.add_child(bubble)
 		bubble.setup(role, content, m.get("timestamp", ""))
+		_connect_bubble_signals(bubble)
 	_scroll_to_bottom.call_deferred()
+
+
+func _connect_bubble_signals(bubble: Node) -> void:
+	if bubble.has_signal("delete_requested"):
+		bubble.delete_requested.connect(_on_bubble_delete_requested)
+
+
+func _on_bubble_delete_requested(timestamp: String) -> void:
+	message_delete_requested.emit(timestamp)
+
+
+func remove_message_by_timestamp(timestamp: String) -> void:
+	for c in message_list.get_children():
+		if c.has_method("get_timestamp") and c.get_timestamp() == timestamp:
+			message_list.remove_child(c)
+			c.queue_free()
+			return
 
 
 func _now_timestamp() -> String:
@@ -213,5 +231,21 @@ func _send_message():
 	message_sent.emit(text)
 
 
+func _apply_send_button_style() -> void:
+	var enabled := not send_btn.disabled
+	send_btn.add_theme_stylebox_override("normal", ACStyle.chat_send_button_stylebox(enabled, false))
+	send_btn.add_theme_stylebox_override("hover", ACStyle.chat_send_button_stylebox(enabled, true))
+	send_btn.add_theme_stylebox_override("pressed", ACStyle.chat_send_button_stylebox(enabled, true))
+	send_btn.add_theme_stylebox_override("disabled", ACStyle.chat_send_button_stylebox(false, false))
+	send_btn.add_theme_stylebox_override("focus", ACStyle.chat_send_button_stylebox(enabled, false))
+	send_btn.add_theme_font_size_override("font_size", UiConfig.si(13))
+	var text_color := ACStyle.BROWN if enabled else ACStyle.BROWN_LIGHT
+	for key in ["font_color", "font_hover_color", "font_pressed_color", "font_focus_color", "font_disabled_color"]:
+		send_btn.add_theme_color_override(key, text_color)
+
+
 func _on_input_changed():
-	send_btn.disabled = input_field.text.strip_edges().is_empty()
+	var has_text := not input_field.text.strip_edges().is_empty()
+	if send_btn.disabled != not has_text:
+		send_btn.disabled = not has_text
+		_apply_send_button_style()

@@ -109,3 +109,31 @@ class MemoryManager:
         with _lock:
             for path in self._all_day_paths():
                 path.unlink(missing_ok=True)
+
+    def delete_message(self, timestamp: str) -> bool:
+        """Remove one message by exact timestamp. Returns True if removed."""
+        ts = (timestamp or "").strip()
+        if not ts:
+            return False
+        with _lock:
+            day = self._day_key(ts)
+            path = self._path_for_day(day)
+            if path.exists():
+                entries = self._read_jsonl(path)
+                kept = [e for e in entries if e.get("timestamp") != ts]
+                if len(kept) < len(entries):
+                    if kept:
+                        self._write_jsonl(path, kept)
+                    else:
+                        path.unlink(missing_ok=True)
+                    return True
+            for path in self._all_day_paths():
+                entries = self._read_jsonl(path)
+                kept = [e for e in entries if e.get("timestamp") != ts]
+                if len(kept) < len(entries):
+                    if kept:
+                        self._write_jsonl(path, kept)
+                    else:
+                        path.unlink(missing_ok=True)
+                    return True
+        return False

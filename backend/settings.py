@@ -6,6 +6,8 @@ Reads/writes data/settings.json with sensible defaults.
 import json
 from pathlib import Path
 
+from prompts import DEFAULT_PROMPTS
+
 SETTINGS_FILE = Path(__file__).resolve().parent / "data" / "settings.json"
 
 DEFAULTS = {
@@ -13,9 +15,15 @@ DEFAULTS = {
         "scale_multiplier": 1.0,
     },
     "chat": {
-        "model": "deepseek-chat",
+        "model": "deepseek-v4-flash",
         "temperature": 0.8,
+        "api_key": "",
+        "api_base": "https://api.deepseek.com",
+        "thinking_enabled": True,
+        "use_memory": True,
+        "record_memory": True,
     },
+    "prompts": dict(DEFAULT_PROMPTS),
     "pomodoro": {
         "work_minutes": 25,
         "break_minutes": 5,

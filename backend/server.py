@@ -43,8 +43,14 @@ _load_dotenv()
 # ── Config ──
 
 API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
-API_BASE = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com/v1")
-MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+API_BASE = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com")
+MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
+
+# 旧模型名 → V4 规范名（见 https://api-docs.deepseek.com/zh-cn/ ）
+_LEGACY_MODEL_MAP = {
+    "deepseek-chat": "deepseek-v4-flash",
+    "deepseek-reasoner": "deepseek-v4-pro",
+}
 
 # Shared state
 _godot_ws = None
@@ -112,7 +118,8 @@ async def handler(websocket):
     _godot_ws = websocket
     print(f"[+] Godot connected ({websocket.remote_address})")
 
-    # Send full history on connect
+    # Push persisted state on connect so client never guesses defaults
+    await _send("settings.data", _settings.get_all())
     await _send_history()
 
     try:
@@ -123,8 +130,15 @@ async def handler(websocket):
             match msg_type:
                 case "user.chat":
                     text = (msg.get("text") or "").strip()
+                    mode = (msg.get("mode") or "default").strip() or "default"
                     if text:
-                        await _handle_chat(text)
+                        await _handle_chat(
+                            text,
+                            mode,
+                            thinking=msg.get("thinking"),
+                            use_memory=msg.get("use_memory"),
+                            record_memory=msg.get("record_memory"),
+                        )
                     else:
                         await _send("assistant.done", {
                             "full_text": "你想说什么呀，喵？"
@@ -150,6 +164,15 @@ async def handler(websocket):
                 case "history.request":
                     await _send_history()
 
+                case "history.clear":
+                    _memory.clear_all()
+                    await _send("history.cleared", {})
+
+                case "history.delete":
+                    ts = (msg.get("timestamp") or "").strip()
+                    ok = _memory.delete_message(ts)
+                    await _send("history.deleted", {"timestamp": ts, "ok": ok})
+
                 case "ping":
                     await _send("pong", {})
 
@@ -161,6 +184,14 @@ async def handler(websocket):
                     if key and "value" in msg:
                         _settings.set(key, msg["value"])
                         if key.startswith("chat."):
+                            _llm = _make_llm()
+                        await _send("settings.updated", _settings.get_all())
+
+                case "settings.set_bulk":
+                    updates = msg.get("updates") or {}
+                    if isinstance(updates, dict) and updates:
+                        _settings.set_bulk(updates)
+                        if any(str(k).startswith("chat.") for k in updates):
                             _llm = _make_llm()
                         await _send("settings.updated", _settings.get_all())
 
@@ -180,13 +211,41 @@ async def handler(websocket):
 
 # ── Chat handler ──
 
-async def _handle_chat(user_text: str):
-    """Process user chat: save → build context → stream LLM → save reply."""
-    # Save user message
-    _memory.add_message("user", user_text)
+async def _handle_chat(
+    user_text: str,
+    mode: str = "default",
+    *,
+    thinking=None,
+    use_memory=None,
+    record_memory=None,
+):
+    """Process user chat: optional save → build context → stream LLM → optional save reply."""
+    thinking_on = (
+        bool(thinking)
+        if thinking is not None
+        else bool(_settings.get("chat.thinking_enabled"))
+    )
+    # Fortune / explore — short replies, skip slow reasoning pass
+    if mode in ("fortune", "explore"):
+        thinking_on = False
+    use_mem = (
+        bool(use_memory)
+        if use_memory is not None
+        else bool(_settings.get("chat.use_memory"))
+    )
+    record_mem = (
+        bool(record_memory)
+        if record_memory is not None
+        else bool(_settings.get("chat.record_memory"))
+    )
 
-    # Build messages
-    messages = build_messages(user_text, _memory)
+    if record_mem:
+        _memory.add_message("user", user_text)
+
+    mem = _memory if use_mem else None
+    messages = build_messages(
+        user_text, mem, _settings, mode=mode, use_memory=use_mem
+    )
 
     if _llm is None:
         await _send("assistant.chunk", {"delta": "API 还没配置好喵... 让主人去设置一下 DeepSeek Key"})
@@ -195,8 +254,11 @@ async def _handle_chat(user_text: str):
 
     # Stream
     full_text = ""
+    api_model = _resolve_model(thinking_on)
     try:
-        async for delta in _llm.stream_chat(messages):
+        async for delta in _llm.stream_chat(
+            messages, thinking=thinking_on, model=api_model
+        ):
             full_text += delta
             await _send("assistant.chunk", {"delta": delta})
     except Exception as e:
@@ -206,11 +268,15 @@ async def _handle_chat(user_text: str):
             await _send("assistant.chunk", {"delta": err_text})
         print(f"[!] LLM error: {e}")
 
+    if not full_text.strip():
+        full_text = "唔...嘟嘟一时说不出话，再试一次喵~"
+        await _send("assistant.chunk", {"delta": full_text})
+
     # Done
     await _send("assistant.done", {"full_text": full_text})
 
     # Save assistant reply
-    if full_text.strip():
+    if record_mem and full_text.strip():
         _memory.add_message("assistant", full_text.strip())
 
 
@@ -241,13 +307,37 @@ async def _broadcast(msg_type: str, payload: dict):
     await _send(msg_type, payload)
 
 
+def _resolve_api_key() -> str:
+    key = (_settings.get("chat.api_key") or "").strip()
+    if key:
+        return key
+    return API_KEY
+
+
+def _resolve_api_base() -> str:
+    base = (_settings.get("chat.api_base") or "").strip()
+    if base:
+        return base.rstrip("/")
+    return API_BASE.rstrip("/")
+
+
+def _resolve_model(thinking: bool = False) -> str:
+    model = (_settings.get("chat.model") or MODEL or "").strip()
+    api_model = _LEGACY_MODEL_MAP.get(model, model)
+    # 思考模式：Flash 切到 Pro（官方思考示例用 v4-pro）
+    if thinking and api_model == "deepseek-v4-flash":
+        api_model = "deepseek-v4-pro"
+    return api_model
+
+
 def _make_llm() -> LLMClient | None:
-    if not API_KEY:
+    api_key = _resolve_api_key()
+    if not api_key:
         return None
     return LLMClient(
-        api_key=API_KEY,
-        base_url=API_BASE,
-        model=_settings.get("chat.model") or MODEL,
+        api_key=api_key,
+        base_url=_resolve_api_base(),
+        model=_resolve_model(),
         temperature=_settings.get("chat.temperature") or 0.8,
     )
 
@@ -260,9 +350,9 @@ async def main():
     threading.Thread(target=_start_tray, daemon=True).start()
 
     # Init LLM client
-    if API_KEY:
+    if API_KEY or _resolve_api_key():
         _llm = _make_llm()
-        print(f"[LLM] DeepSeek ready: {_settings.get('chat.model')} @ {API_BASE}")
+        print(f"[LLM] DeepSeek ready: {_resolve_model()} @ {_resolve_api_base()}")
     else:
         print("[LLM] No DEEPSEEK_API_KEY set — chat will show placeholder")
 
