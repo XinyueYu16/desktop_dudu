@@ -5,6 +5,7 @@ Handles: AI chat (DeepSeek), pet actions, system tray.
 import asyncio
 import json
 import os
+import re
 import threading
 import time
 import uuid
@@ -146,7 +147,7 @@ async def handler(websocket):
 
                 case "pet.poke":
                     await _send("pet.action", {
-                        "animation": "petted",
+                        "animation": "happy",
                         "bubble_text": "干嘛戳我！"
                     })
 
@@ -274,6 +275,12 @@ async def _handle_chat(
 
     # Done
     await _send("assistant.done", {"full_text": full_text})
+
+    # Parse animation commands from LLM output
+    for m in re.finditer(r"\[animation:\s*(\w+)\]", full_text):
+        anim = m.group(1).strip().lower()
+        if anim in ("idle", "talking", "happy", "bite", "faint", "petted"):
+            await _send("pet.action", {"animation": anim, "bubble_text": ""})
 
     # Save assistant reply
     if record_mem and full_text.strip():

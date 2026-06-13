@@ -21,6 +21,10 @@ offset_bottom = 508.0
 expand_mode = 1
 stretch_mode = 5
 
+[node name="CatSprite" type="AnimatedSprite2D" parent="."]
+visible = false
+centered = true
+
 [node name="SpeechBubble" type="PanelContainer" parent="." unique_id=1314465677]
 visible = false
 layout_mode = 0

@@ -5,6 +5,7 @@ extends Control
 
 # Nodes
 @onready var cat: TextureRect = $CatTexture
+@onready var cat_sprite: AnimatedSprite2D = $CatSprite
 @onready var speech_bubble: PanelContainer = $SpeechBubble
 @onready var bubble: Label = $SpeechBubble/BubbleLabel
 @onready var circ_menu: Control = $CircularMenu
@@ -23,10 +24,12 @@ var _ws_retry_ts: int = 0
 var _backend_pid: int = -1
 
 # Animation
-enum Anim { IDLE, TALKING, PETTED }
+enum Anim { IDLE, TALKING, HAPPY, BITE, FAINT }
 var current_anim: Anim = Anim.IDLE
 var _anim_lock: bool = false
 var _breathe_tween: Tween = null
+var _idle_loop_gen: int = 0
+const SPRITE_SHEET_DIR: String = "../assets/sprite sheet/"
 
 # Hover input
 var _hover_input: PanelContainer = null
@@ -46,12 +49,16 @@ var _history_cache: Array = []
 
 const MSG_BUBBLE = preload("res://scenes/message_bubble.tscn")
 const ChatBubbleStyle = preload("res://scripts/chat_bubble_style.gd")
+const CAT_PLACEHOLDER: Texture2D = preload("res://assets/sprites/cat.png")
 const BASE_CAT_SIZE := 128.0
 const BASE_SPACE_ABOVE_CAT := 380.0
 const INPUT_GAP_ABOVE_CAT := 12.0
 const BUBBLE_GAP_ABOVE_INPUT := 14.0
 const BREATHE_PEAK_Y := 1.012
 const BREATHE_PERIOD := 2.6
+const IDLE_RANDOM_MIN := 90.0
+const IDLE_RANDOM_MAX := 180.0
+const TALKING_IDLE_SPEED_SCALE := 0.35
 const STACK_SHOW_DELAY := 0.5
 const STACK_MIN_VISIBLE_MS := 2000
 const CHAT_REPLY_TIMEOUT := 90.0
@@ -82,8 +89,8 @@ const _TOGGLE_SETTING_KEYS := {
 # ============================================================
 
 func _ready():
+	_setup_cat_sprite()
 	_setup_window()
-	_load_cat_texture()
 	_style_speech_bubble()
 	_create_hover_input()
 	_create_floating_bubbles()
@@ -95,6 +102,7 @@ func _ready():
 	_play_anim(Anim.IDLE)
 	_connect_ws()
 	get_tree().create_timer(1.0).timeout.connect(_check_and_launch_backend)
+	_start_idle_loop()
 	print("DuDu Phase 2 started — window %s scale %.2f" % [UiConfig.window_size, UiConfig.scale])
 
 
@@ -139,8 +147,8 @@ func _bubble_bottom_limit() -> float:
 
 
 func _apply_layer_order() -> void:
-	# Back → front: cat, speech, bubbles, input
-	var ordered: Array[Node] = [cat, speech_bubble, _floating_bubbles, _hover_input, circ_menu]
+	# Back → front: cat, sprite overlay, speech, bubbles, input
+	var ordered: Array[Node] = [cat, cat_sprite, speech_bubble, _floating_bubbles, _hover_input, circ_menu]
 	if chat_panel:
 		ordered.append(chat_panel)
 	if settings_panel:
@@ -234,33 +242,48 @@ func _layout_cat_in_window():
 	_cat_bottom = cat.offset_bottom
 	cat.scale = Vector2.ONE
 	cat.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	if cat_sprite.visible:
+		_sync_sprite_for_anim(cat_sprite.animation)
 
 
-func _load_cat_texture():
-	var img_path = ProjectSettings.globalize_path("res://").path_join("../assets/占位.png")
-	var img = Image.load_from_file(img_path)
-	if img:
-		cat.texture = ImageTexture.create_from_image(img)
-	else:
-		_make_placeholder_cat()
+# ============================================================
+# Cat sprite setup
+# ============================================================
+
+func _setup_cat_sprite():
+	var sf := SpriteFrames.new()
+	_add_sheet_frames(sf, "idle", "trans-Dudu-idle-4x4.png", 4, 4, 8.0, true)
+	# Sheet is 5×5 cells (128px); filename 4x5 is misleading.
+	_add_sheet_frames(sf, "walk", "trans-Dudu-walk-4x5.png", 5, 5, 10.0, true)
+	_add_sheet_frames(sf, "happy", "trans-Dudu-happy-4x5.png", 4, 5, 10.0, false)
+	_add_sheet_frames(sf, "bite", "trans-Dudu-bite-4x4.png", 4, 4, 12.0, false)
+	_add_sheet_frames(sf, "faint", "trans-Dudu-瘫倒-nobg-4x4.png", 4, 4, 6.0, false)
+	cat_sprite.sprite_frames = sf
+	cat_sprite.hide()
+	cat_sprite.centered = true
 
 
-func _make_placeholder_cat():
-	var size := 128; var img := Image.create(size, size, false, Image.FORMAT_RGBA8)
-	var cx := size / 2; var cy := size / 2; var r := 56
-	for x in size:
-		for y in size:
-			var dx = x - cx; var dy = y - cy
-			if dx * dx + dy * dy <= r * r:
-				img.set_pixel(x, y, Color(0.35, 0.52, 0.71, 1))
-				if abs(x - (cx - 18)) <= 6 and abs(y - (cy - 10)) <= 5:
-					img.set_pixel(x, y, Color(0.1, 0.1, 0.15, 1))
-				if abs(x - (cx + 18)) <= 6 and abs(y - (cy - 10)) <= 5:
-					img.set_pixel(x, y, Color(0.1, 0.1, 0.15, 1))
-				var mx = x - cx; var my = y - (cy + 8)
-				if abs(mx) <= 8 and abs(my - (-abs(mx * 0.6))) <= 1.5:
-					img.set_pixel(x, y, Color(0.1, 0.1, 0.15, 1))
-	cat.texture = ImageTexture.create_from_image(img)
+func _add_sheet_frames(sf: SpriteFrames, anim_name: String, filename: String, cols: int, rows: int, fps: float, loop: bool):
+	var root = ProjectSettings.globalize_path("res://")
+	var path = root.path_join(SPRITE_SHEET_DIR).path_join(filename)
+	var img = Image.load_from_file(path)
+	if img == null:
+		print("WARNING: Missing sprite sheet ", path)
+		return
+	var tex = ImageTexture.create_from_image(img)
+	var fw: int = img.get_width() / cols
+	var fh: int = img.get_height() / rows
+	sf.add_animation(anim_name)
+	sf.set_animation_speed(anim_name, fps)
+	sf.set_animation_loop(anim_name, loop)
+	for row in range(rows):
+		for col in range(cols):
+			var at := AtlasTexture.new()
+			at.atlas = tex
+			at.region = Rect2(col * fw, row * fh, fw, fh)
+			at.filter_clip = true
+			sf.add_frame(anim_name, at)
+	print("Loaded %s: %d frames from %s" % [anim_name, rows * cols, filename])
 
 
 func _create_hover_input():
@@ -641,6 +664,8 @@ func _sync_circ_menu_toggles() -> void:
 # ============================================================
 
 func _connect_ws():
+	if ws.get_ready_state() != WebSocketPeer.STATE_CLOSED:
+		return
 	ws.connect_to_url(WS_URL)
 
 
@@ -757,8 +782,11 @@ func _handle_ws_messages():
 
 func _handle_action(action: String):
 	match action:
-		"petted": _play_anim(Anim.PETTED)
+		"idle": _play_anim(Anim.IDLE)
 		"talking": _play_anim(Anim.TALKING)
+		"happy", "petted": _play_anim(Anim.HAPPY)
+		"bite": _play_anim(Anim.BITE)
+		"faint": _play_anim(Anim.FAINT)
 		_: pass
 
 
@@ -767,7 +795,7 @@ func _reconnect():
 	if _ws_retry_ts < t:
 		_ws_retry_ts = t + 3000
 		ws = WebSocketPeer.new()
-		ws.connect_to_url(WS_URL)
+		_connect_ws()
 		print("WS reconnect...")
 
 
@@ -897,31 +925,117 @@ func _shutdown():
 # ============================================================
 
 func _play_anim(anim: Anim):
-	if _anim_lock and anim != current_anim:
-		return
-	if _breathe_tween and _breathe_tween.is_valid():
-		_breathe_tween.kill()
-	current_anim = anim
-
 	match anim:
 		Anim.IDLE:
+			_cancel_one_shot()
+			current_anim = Anim.IDLE
+			_show_idle_placeholder()
 			_start_breathing()
 		Anim.TALKING:
-			_start_breathing(BREATHE_PEAK_Y + 0.004, 1.2)
-		Anim.PETTED:
-			_anim_lock = true
-			var tw = create_tween()
-			tw.tween_method(_set_cat_breathe, 1.0, 0.97, 0.1)
-			tw.tween_method(_set_cat_breathe, 0.97, BREATHE_PEAK_Y + 0.01, 0.12)
-			tw.tween_method(_set_cat_breathe, BREATHE_PEAK_Y + 0.01, 1.0, 0.15)
-			tw.tween_callback(func(): _anim_lock = false; _play_anim(Anim.IDLE))
+			_cancel_one_shot()
+			current_anim = Anim.TALKING
+			if _breathe_tween and _breathe_tween.is_valid():
+				_breathe_tween.kill()
+			_show_sprite_anim("idle", TALKING_IDLE_SPEED_SCALE)
+		Anim.HAPPY:
+			if _anim_lock: return
+			_start_one_shot("happy", Anim.HAPPY)
+		Anim.BITE:
+			if _anim_lock: return
+			_start_one_shot("bite", Anim.BITE)
+		Anim.FAINT:
+			if _anim_lock: return
+			_start_one_shot("faint", Anim.FAINT)
+
+
+func _show_idle_placeholder() -> void:
+	cat_sprite.hide()
+	cat.texture = CAT_PLACEHOLDER
+	cat.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+
+
+func _show_sprite_anim(anim_name: String, speed_scale: float = 1.0) -> void:
+	cat.texture = null
+	cat_sprite.show()
+	cat_sprite.speed_scale = speed_scale
+	_sync_sprite_for_anim(anim_name)
+	cat_sprite.play(anim_name)
+
+
+func _cancel_one_shot():
+	_anim_lock = false
+
+
+func _start_one_shot(anim_name: String, anim_enum: Anim):
+	_anim_lock = true
+	current_anim = anim_enum
+	if _breathe_tween and _breathe_tween.is_valid():
+		_breathe_tween.kill()
+	_set_cat_breathe(1.0)
+	_show_sprite_anim(anim_name)
+	var frame_count: int = cat_sprite.sprite_frames.get_frame_count(anim_name)
+	var fps: float = cat_sprite.sprite_frames.get_animation_speed(anim_name)
+	var duration := frame_count / fps
+	await get_tree().create_timer(duration).timeout
+	if current_anim == anim_enum:
+		_anim_lock = false
+		_play_anim(Anim.IDLE)
 
 
 func _start_breathing(peak_y: float = BREATHE_PEAK_Y, period: float = BREATHE_PERIOD):
 	_set_cat_breathe(1.0)
+	if _breathe_tween and _breathe_tween.is_valid():
+		_breathe_tween.kill()
 	_breathe_tween = create_tween().set_loops()
 	_breathe_tween.tween_method(_set_cat_breathe, 1.0, peak_y, period).set_ease(Tween.EASE_IN_OUT)
 	_breathe_tween.tween_method(_set_cat_breathe, peak_y, 1.0, period).set_ease(Tween.EASE_IN_OUT)
+
+
+func _sync_sprite_for_anim(anim_name: String) -> void:
+	var rect := _cat_rect()
+	if rect.size.x <= 0 or rect.size.y <= 0:
+		return
+	var sf := cat_sprite.sprite_frames
+	if sf == null or not sf.has_animation(anim_name):
+		return
+	var frame_tex: Texture2D = sf.get_frame_texture(anim_name, 0)
+	if frame_tex == null:
+		return
+	var frame_size := frame_tex.get_size()
+	if frame_size.x <= 0 or frame_size.y <= 0:
+		return
+	var target_scale := minf(rect.size.x / frame_size.x, rect.size.y / frame_size.y)
+	cat_sprite.scale = Vector2(target_scale, target_scale)
+	var scaled_h := frame_size.y * target_scale
+	var cx := rect.position.x + rect.size.x * 0.5
+	var foot_y := rect.position.y + rect.size.y
+	cat_sprite.position = Vector2(cx, foot_y - scaled_h * 0.5)
+
+
+# ============================================================
+# Random idle animations
+# ============================================================
+
+func _start_idle_loop():
+	_idle_loop_gen += 1
+	var gen := _idle_loop_gen
+	while gen == _idle_loop_gen:
+		var delay := randf_range(IDLE_RANDOM_MIN, IDLE_RANDOM_MAX)
+		await get_tree().create_timer(delay).timeout
+		if gen != _idle_loop_gen:
+			return
+		if current_anim == Anim.IDLE and not _anim_lock and not _chat_session_active:
+			_trigger_random_idle()
+
+
+func _trigger_random_idle():
+	var r := randf()
+	if r < 0.4:
+		_play_anim(Anim.HAPPY)
+	elif r < 0.7:
+		_play_anim(Anim.BITE)
+	else:
+		_play_anim(Anim.FAINT)
 
 
 # ============================================================
