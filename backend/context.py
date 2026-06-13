@@ -6,6 +6,7 @@ Simplified from Nero context.py:
 from datetime import datetime
 from calendar import day_name
 
+from daily_stats import DailyStatsManager
 from memory import MemoryManager
 from prompts import build_system_prompt
 from settings import SettingsManager
@@ -44,6 +45,19 @@ def _content_for_api(entry: dict) -> str:
     return content
 
 
+def inject_yesterday_summary(
+    settings: SettingsManager,
+    daily_stats: DailyStatsManager | None,
+) -> str | None:
+    """Return yesterday reminder stats text for system context, if any."""
+    if daily_stats is None:
+        return None
+    summary = daily_stats.build_yesterday_summary()
+    if not summary:
+        return None
+    return summary.get("summary")
+
+
 def build_messages(
     user_text: str,
     memory: MemoryManager | None,
@@ -51,6 +65,7 @@ def build_messages(
     mode: str = "default",
     context_messages: int = DEFAULT_CONTEXT_MESSAGES,
     use_memory: bool = True,
+    daily_stats: DailyStatsManager | None = None,
 ) -> list[dict]:
     """
     Assemble the messages list for the chat API.
@@ -60,14 +75,19 @@ def build_messages(
       2. recent context from memory (user/assistant pairs)
       3. current user_text as user
 
-    mode: "default" | "fortune" | "explore"
+    mode: "default" | "fortune" | "explore" | "todo_remind" | "pomodoro_complete"
 
     Returns list of {"role": str, "content": str}.
     """
     ctx_count = min(max(1, context_messages), MAX_CONTEXT_MESSAGES)
 
+    system_content = build_system_prompt(settings, mode)
+    yesterday = inject_yesterday_summary(settings, daily_stats)
+    if yesterday:
+        system_content = f"{system_content}\n\n{yesterday}"
+
     messages: list[dict] = [
-        {"role": "system", "content": build_system_prompt(settings, mode)}
+        {"role": "system", "content": system_content}
     ]
 
     # Recent memory context — with timestamp injection for user messages

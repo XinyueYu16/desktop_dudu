@@ -1,0 +1,9 @@
+[
+  {"id": "leaf", "name": "叶子", "icon": "leaf.png", "emoji": "🍃", "rarity": "common", "weight": 30},
+  {"id": "apple", "name": "苹果", "icon": "apple.png", "emoji": "🍎", "rarity": "common", "weight": 25},
+  {"id": "shell", "name": "贝壳", "icon": "shell.png", "emoji": "🐚", "rarity": "common", "weight": 25},
+  {"id": "star", "name": "星星碎片", "icon": "star.png", "emoji": "⭐", "rarity": "uncommon", "weight": 12},
+  {"id": "feather", "name": "羽毛", "icon": "feather.png", "emoji": "🪶", "rarity": "uncommon", "weight": 10},
+  {"id": "gem", "name": "小宝石", "icon": "gem.png", "emoji": "💎", "rarity": "rare", "weight": 5},
+  {"id": "fossil", "name": "化石", "icon": "fossil.png", "emoji": "🦴", "rarity": "rare", "weight": 3}
+]

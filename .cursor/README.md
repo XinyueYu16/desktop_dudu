@@ -10,6 +10,13 @@
 | [04-dev-phases.md](./04-dev-phases.md) | Phase 0-5+ 开发阶段 + 每周目标 |
 | [05-animation-spec.md](./05-animation-spec.md) | 8 个动画的规格、图层架构、Godot 项目结构 |
 | [06-persona-spec.md](./06-persona-spec.md) | 嘟嘟的性格设定、说话风格、system prompt 模板 |
+| [../design/ui-design-guidelines.md](../design/ui-design-guidelines.md) | UI 设计准则（色板、按钮、卡片；由 `.cursor/rules/ui-design.mdc` 强制注入） |
+
+## Agent 规则
+
+| 规则文件 | 作用 |
+|----------|------|
+| [rules/ui-design.mdc](./rules/ui-design.mdc) | 每次对话自动加载 UI 硬性规则 |
 
 ## 核心决策总结
 

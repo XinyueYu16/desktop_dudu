@@ -1,0 +1,12 @@
+{
+  "date": "2026-06-13",
+  "reminders": {
+    "triggered": {
+      "water": 29,
+      "stretch": 2
+    },
+    "acked": {
+      "water": 12
+    }
+  }
+}

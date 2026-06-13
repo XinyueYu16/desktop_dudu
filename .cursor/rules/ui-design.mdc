@@ -1,0 +1,23 @@
+---
+description: 嘟嘟桌宠 UI 设计准则（动森风格，ACStyle 统一主题）
+alwaysApply: true
+---
+
+# UI 设计准则
+
+完整文档：`design/ui-design-guidelines.md`。实现入口：`dudu_pet/scripts/ac_style.gd`。
+
+参考 [animal-island-ui](https://github.com/guokaigdg/animal-island-ui) — 温暖圆润、奶油底、棕褐字；**保存/添加**用 `#6fba2c`（`AC_GREEN`）。按钮阴影与提醒卡片一致：`apply_soft_elevation_shadow`（α0.18，勿过重）。
+
+## 硬性规则（违反即需修复）
+
+1. **禁止白色/近白字体** — 面板内不用 `Color.WHITE` / `LIGHT_TEXT`；按钮字统一 `ACStyle.BROWN`，已保存/禁用用 `BROWN_LIGHT`。例外：桌面悬浮暗色气泡可浅色字，但非纯白。
+2. **可交互单键 = 有阴影实体按钮** — `flat = false`，`focus_mode = FOCUS_NONE`，带 `shadow_size` 的 StyleBoxFlat，禁止手写一次性按钮样式：
+   - 主操作 → `ACStyle.apply_footer_button_theme(btn, saved)`
+   - 危险操作 → `ACStyle.apply_danger_button_theme(btn, min_width)`
+   - 发送 → `ACStyle.chat_send_button_stylebox` + 棕字
+3. **列表卡片** — 参照 `reminders_panel.gd`：语义配色、圆角 12px、描边+阴影、禁用 `modulate` 0.55。
+4. **表单** — `apply_line_edit_theme` / `apply_option_button_theme` / `apply_checkbox_theme` / `apply_slider_theme`。
+5. **面板** — 宽 400px（`UiConfig` 缩放），页脚按钮右对齐。
+
+新增 UI 时同步更新 `design/ui-design-guidelines.md` 组件清单表。

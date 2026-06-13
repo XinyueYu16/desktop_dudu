@@ -11,6 +11,10 @@ extends Control
 @onready var circ_menu: Control = $CircularMenu
 var chat_panel: ChatPanel = null
 var settings_panel: SettingsPanel = null
+var reminders_panel: RemindersPanel = null
+var todos_panel: TodosPanel = null
+var pomodoro_panel: PomodoroPanel = null
+var stargazing_panel: StargazingPanel = null
 
 # Window
 var dragging: bool = false
@@ -62,13 +66,26 @@ const TALKING_IDLE_SPEED_SCALE := 0.35
 const STACK_SHOW_DELAY := 0.5
 const STACK_MIN_VISIBLE_MS := 2000
 const CHAT_REPLY_TIMEOUT := 90.0
+const STARGAZING_TIMEOUT := 45.0
 
 var _cat_base_height: float = 128.0
 var _cat_center_x: float = 0.0
 var _cat_bottom: float = 0.0
 var _stack_layout_gen: int = 0
 var _ws_was_open: bool = false
+var _stargazing_pending: bool = false
+var _stargazing_wait_gen: int = 0
 var _settings_save_pending: bool = false
+var _reminders_save_pending: bool = false
+var _todos_save_pending: bool = false
+var _pomodoro_focus_mode: bool = false
+var _pomodoro_status_lbl: Label = null
+var _pomodoro_status_task: String = ""
+var _pomodoro_status_duration_mins: int = 0
+var _active_reminder_id: String = ""
+var _reminder_ack_row: HBoxContainer = null
+var _reminder_alarm: Label = null
+var _reminder_bubble_tween: Tween = null
 var _chat_wait_gen: int = 0
 # Match backend/settings.py DEFAULTS until settings.data arrives on connect
 var _chat_toggles: Dictionary = {
@@ -96,6 +113,11 @@ func _ready():
 	_create_floating_bubbles()
 	_setup_chat_panel()
 	_setup_settings_panel()
+	_setup_reminders_panel()
+	_setup_todos_panel()
+	_setup_pomodoro_panel()
+	_setup_stargazing_panel()
+	_create_pomodoro_status_label()
 	_apply_ui_scale_to_children()
 	_apply_layer_order()
 	_wire_signals()
@@ -153,6 +175,14 @@ func _apply_layer_order() -> void:
 		ordered.append(chat_panel)
 	if settings_panel:
 		ordered.append(settings_panel)
+	if reminders_panel:
+		ordered.append(reminders_panel)
+	if todos_panel:
+		ordered.append(todos_panel)
+	if pomodoro_panel:
+		ordered.append(pomodoro_panel)
+	if stargazing_panel:
+		ordered.append(stargazing_panel)
 	for i in ordered.size():
 		move_child(ordered[i], i)
 
@@ -176,6 +206,120 @@ func _setup_settings_panel():
 	settings_panel.save_requested.connect(_on_settings_save)
 	settings_panel.clear_history_requested.connect(_on_clear_chat_history)
 	settings_panel.close_requested.connect(func(): settings_panel.hide())
+
+
+func _setup_reminders_panel():
+	var scene: PackedScene = load("res://scenes/reminders_panel.tscn") as PackedScene
+	if scene == null:
+		push_error("DuDu: failed to load reminders_panel.tscn")
+		return
+	var panel = scene.instantiate()
+	if panel == null or not panel.has_method("open"):
+		push_error("DuDu: RemindersPanel script failed to load — check Output for parser errors")
+		if panel:
+			panel.queue_free()
+		return
+	reminders_panel = panel as RemindersPanel
+	add_child(reminders_panel)
+	reminders_panel.save_requested.connect(_on_reminders_save)
+	reminders_panel.close_requested.connect(func():
+		if reminders_panel:
+			reminders_panel.hide()
+	)
+	_create_reminder_ack_ui()
+
+
+func _create_pomodoro_status_label() -> void:
+	_pomodoro_status_lbl = Label.new()
+	_pomodoro_status_lbl.hide()
+	_pomodoro_status_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_pomodoro_status_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_pomodoro_status_lbl.add_theme_font_size_override("font_size", UiConfig.si(12))
+	_pomodoro_status_lbl.add_theme_color_override("font_color", ACStyle.BROWN)
+	add_child(_pomodoro_status_lbl)
+
+
+func _setup_todos_panel() -> void:
+	var scene: PackedScene = load("res://scenes/todos_panel.tscn") as PackedScene
+	if scene == null:
+		push_error("DuDu: failed to load todos_panel.tscn")
+		return
+	var panel = scene.instantiate()
+	if panel == null or not panel.has_method("open"):
+		push_error("DuDu: TodosPanel failed to load")
+		if panel:
+			panel.queue_free()
+		return
+	todos_panel = panel as TodosPanel
+	add_child(todos_panel)
+	todos_panel.save_requested.connect(_on_todos_save)
+	todos_panel.close_requested.connect(func():
+		if todos_panel:
+			todos_panel.hide()
+	)
+
+
+func _setup_pomodoro_panel() -> void:
+	var scene: PackedScene = load("res://scenes/pomodoro_panel.tscn") as PackedScene
+	if scene == null:
+		push_error("DuDu: failed to load pomodoro_panel.tscn")
+		return
+	var panel = scene.instantiate()
+	if panel == null or not panel.has_method("open"):
+		push_error("DuDu: PomodoroPanel failed to load")
+		if panel:
+			panel.queue_free()
+		return
+	pomodoro_panel = panel as PomodoroPanel
+	add_child(pomodoro_panel)
+	pomodoro_panel.start_requested.connect(_on_pomodoro_start)
+	pomodoro_panel.pause_requested.connect(func(): _send_ws({"type": "pomodoro.pause"}))
+	pomodoro_panel.resume_requested.connect(func(): _send_ws({"type": "pomodoro.resume"}))
+	pomodoro_panel.abort_requested.connect(func(): _send_ws({"type": "pomodoro.abort"}))
+	pomodoro_panel.close_requested.connect(func():
+		if pomodoro_panel:
+			pomodoro_panel.hide()
+	)
+
+
+func _setup_stargazing_panel() -> void:
+	var scene: PackedScene = load("res://scenes/stargazing_panel.tscn") as PackedScene
+	if scene == null:
+		push_error("DuDu: failed to load stargazing_panel.tscn")
+		return
+	var panel = scene.instantiate()
+	if panel == null or not panel.has_method("open"):
+		push_error("DuDu: StargazingPanel failed to load")
+		if panel:
+			panel.queue_free()
+		return
+	stargazing_panel = panel as StargazingPanel
+	add_child(stargazing_panel)
+	stargazing_panel.refresh_requested.connect(_on_stargazing_refresh)
+	stargazing_panel.location_save_requested.connect(_on_stargazing_location_save)
+	stargazing_panel.close_requested.connect(func():
+		if stargazing_panel:
+			stargazing_panel.close_panel()
+	)
+
+
+func _create_reminder_ack_ui():
+	_reminder_alarm = Label.new()
+	_reminder_alarm.text = "⏰"
+	_reminder_alarm.hide()
+	_reminder_alarm.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_reminder_alarm.add_theme_font_size_override("font_size", UiConfig.si(18))
+	add_child(_reminder_alarm)
+
+	_reminder_ack_row = HBoxContainer.new()
+	_reminder_ack_row.hide()
+	_reminder_ack_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	var ack_btn := Button.new()
+	ack_btn.text = "知道了"
+	ack_btn.pressed.connect(_on_reminder_ack)
+	ACStyle.apply_footer_button_theme(ack_btn, false)
+	_reminder_ack_row.add_child(ack_btn)
+	add_child(_reminder_ack_row)
 
 
 func _on_settings_save(pending: Dictionary) -> void:
@@ -205,6 +349,14 @@ func _refresh_ui_scale() -> void:
 		chat_panel.apply_ui_scale()
 	if settings_panel:
 		settings_panel.apply_ui_scale()
+	if reminders_panel:
+		reminders_panel.apply_ui_scale()
+	if todos_panel:
+		todos_panel.apply_ui_scale()
+	if pomodoro_panel:
+		pomodoro_panel.apply_ui_scale()
+	if stargazing_panel:
+		stargazing_panel.apply_ui_scale()
 	if circ_menu:
 		circ_menu.apply_ui_scale()
 	_schedule_stack_layout()
@@ -527,9 +679,13 @@ func _on_menu_action(action: String):
 		"chat_history":
 			_open_chat_history()
 		"reminders":
-			_show_bubble("定时提醒功能即将上线~")
+			_open_reminders()
+		"todos":
+			_open_todos()
 		"explore":
-			_send_chat("嘟嘟想做点什么", false, "explore")
+			_open_pomodoro()
+		"stargazing":
+			_open_stargazing()
 		"fortune":
 			_send_chat("今日运势", false, "fortune")
 		"settings":
@@ -638,6 +794,172 @@ func _open_chat_history():
 
 
 
+func _open_reminders():
+	if reminders_panel == null:
+		push_error("DuDu: reminders panel unavailable")
+		return
+	if settings_panel and settings_panel.visible:
+		settings_panel.hide()
+	if chat_panel and chat_panel.visible:
+		chat_panel.hide()
+	reminders_panel.open(_cat_center())
+	_send_ws({"type": "reminders.get"})
+
+
+func _on_reminders_save(items: Array) -> void:
+	if reminders_panel == null:
+		return
+	if ws.get_ready_state() != WebSocketPeer.STATE_OPEN:
+		reminders_panel.mark_save_failed()
+		return
+	_reminders_save_pending = true
+	_send_ws({"type": "reminders.set", "items": items})
+
+
+func _open_todos() -> void:
+	if todos_panel == null:
+		return
+	if chat_panel.visible:
+		chat_panel.hide()
+	if settings_panel and settings_panel.visible:
+		settings_panel.hide()
+	if reminders_panel and reminders_panel.visible:
+		reminders_panel.hide()
+	todos_panel.open(_cat_center())
+	_send_ws({"type": "todos.get"})
+
+
+func _on_todos_save(items: Array) -> void:
+	if todos_panel == null:
+		return
+	if ws.get_ready_state() != WebSocketPeer.STATE_OPEN:
+		todos_panel.mark_save_failed()
+		return
+	_todos_save_pending = true
+	_send_ws({"type": "todos.set", "items": items})
+
+
+func _open_pomodoro() -> void:
+	if pomodoro_panel == null:
+		return
+	if chat_panel.visible:
+		chat_panel.hide()
+	pomodoro_panel.open(_cat_center())
+	_send_ws({"type": "inventory.get"})
+	_send_ws({"type": "pomodoro.get"})
+
+
+func _on_pomodoro_start(task: String, duration_minutes: int) -> void:
+	_pomodoro_status_task = task if not task.is_empty() else "专注"
+	_pomodoro_status_duration_mins = maxi(1, duration_minutes)
+	_send_ws({
+		"type": "pomodoro.start",
+		"task": task,
+		"duration_minutes": duration_minutes,
+	})
+
+
+func _open_stargazing() -> void:
+	if stargazing_panel == null:
+		return
+	if chat_panel.visible:
+		chat_panel.hide()
+	stargazing_panel.open(_cat_center())
+	_send_ws({"type": "settings.get"})
+
+
+func _on_stargazing_refresh() -> void:
+	if stargazing_panel == null:
+		return
+	stargazing_panel.set_loading(true)
+	_stargazing_pending = true
+	_stargazing_wait_gen += 1
+	var gen := _stargazing_wait_gen
+	get_tree().create_timer(STARGAZING_TIMEOUT).timeout.connect(func():
+		if gen == _stargazing_wait_gen and _stargazing_pending and stargazing_panel:
+			stargazing_panel.show_error("请求超时，请确认 backend 已启动")
+			_stargazing_pending = false
+	, CONNECT_ONE_SHOT)
+	if ws.get_ready_state() != WebSocketPeer.STATE_OPEN:
+		stargazing_panel.show_error("后端未连接，正在启动…")
+		_check_and_launch_backend()
+		return
+	_send_ws({"type": "stargazing.get"})
+
+
+func _on_stargazing_location_save(city: String, latitude: float, longitude: float) -> void:
+	_send_ws({
+		"type": "settings.set_bulk",
+		"updates": {
+			"stargazing.city": city,
+			"stargazing.latitude": latitude,
+			"stargazing.longitude": longitude,
+		},
+	})
+	get_tree().create_timer(0.3).timeout.connect(_on_stargazing_refresh)
+
+
+func _on_reminder_ack() -> void:
+	if _active_reminder_id.is_empty():
+		return
+	_send_ws({"type": "reminders.ack", "id": _active_reminder_id})
+	_clear_reminder_ui()
+
+
+func _clear_reminder_ui() -> void:
+	_active_reminder_id = ""
+	if _reminder_bubble_tween and _reminder_bubble_tween.is_valid():
+		_reminder_bubble_tween.kill()
+		_reminder_bubble_tween = null
+	_reminder_ack_row.hide()
+	_reminder_alarm.hide()
+	speech_bubble.hide()
+
+
+func _show_reminder_trigger(payload: Dictionary) -> void:
+	_active_reminder_id = str(payload.get("id", ""))
+	var text: String = str(payload.get("bubble_text", "嘟嘟提醒你一下喵~"))
+	_show_bubble_persistent(text)
+	_reminder_alarm.show()
+	_reminder_ack_row.show()
+	_handle_action(str(payload.get("animation", "happy")))
+	call_deferred("_layout_reminder_overlay")
+
+
+func _position_reminder_alarm() -> void:
+	var cat_rect := _cat_rect()
+	_reminder_alarm.position = Vector2(
+		cat_rect.position.x + UiConfig.s(4),
+		cat_rect.position.y - UiConfig.s(8)
+	)
+
+
+func _position_reminder_ack() -> void:
+	_reminder_ack_row.reset_size()
+	speech_bubble.reset_size()
+	var cx := _cat_center().x
+	var bw := maxf(_reminder_ack_row.size.x, UiConfig.s(80))
+	var bubble_bottom := speech_bubble.position.y + speech_bubble.size.y
+	_reminder_ack_row.position = Vector2(
+		cx - bw / 2.0,
+		bubble_bottom + UiConfig.s(4)
+	)
+
+
+func _layout_reminder_overlay() -> void:
+	_position_bubble()
+	_position_reminder_alarm()
+	_position_reminder_ack()
+
+
+func _show_bubble_persistent(text: String) -> void:
+	if _reminder_bubble_tween and _reminder_bubble_tween.is_valid():
+		_reminder_bubble_tween.kill()
+		_reminder_bubble_tween = null
+	bubble.text = text
+	speech_bubble.show()
+	_schedule_stack_layout()
+	_position_bubble()
 func _open_settings():
 	settings_panel.open(_cat_center())
 	_send_ws({"type": "settings.get"})
@@ -672,6 +994,8 @@ func _connect_ws():
 func _process(_delta):
 	ws.poll()
 	var ws_open := ws.get_ready_state() == WebSocketPeer.STATE_OPEN
+	if ws_open and not _ws_was_open and _stargazing_pending:
+		_send_ws({"type": "stargazing.get"})
 	_ws_was_open = ws_open
 	_handle_ws_messages()
 	_update_passthrough()
@@ -762,12 +1086,14 @@ func _handle_ws_messages():
 				var prev_scale := UiConfig.user_multiplier
 				if settings_panel:
 					settings_panel.populate(msg["payload"])
-				UiConfig.persist_multiplier()
-				# Don't clobber in-menu toggle edits or relayout while the card is open.
-				if not circ_menu.is_open():
-					_apply_chat_toggles(msg["payload"])
+				if stargazing_panel:
+					stargazing_panel.populate_location(msg["payload"])
 				if not is_equal_approx(prev_scale, UiConfig.user_multiplier):
 					_refresh_ui_scale()
+				UiConfig.persist_multiplier()
+
+				if not circ_menu.is_open():
+					_apply_chat_toggles(msg["payload"])
 
 			"settings.updated":
 				# Toggle state is optimistic-local; echo would race and break menu styling.
@@ -775,6 +1101,94 @@ func _handle_ws_messages():
 					_settings_save_pending = false
 					if settings_panel:
 						settings_panel.mark_saved()
+
+			"reminders.data":
+				if reminders_panel:
+					var items = msg["payload"].get("items", [])
+					reminders_panel.populate(items)
+				if _reminders_save_pending:
+					_reminders_save_pending = false
+					if reminders_panel:
+						reminders_panel.mark_saved()
+
+			"reminder.trigger":
+				_show_reminder_trigger(msg["payload"])
+
+			"reminders.acked":
+				if str(msg["payload"].get("id", "")) == _active_reminder_id:
+					_clear_reminder_ui()
+
+			"daily_stats.yesterday":
+				pass
+
+			"todos.data":
+				if todos_panel:
+					todos_panel.populate(msg["payload"].get("items", []))
+				if _todos_save_pending:
+					_todos_save_pending = false
+					if todos_panel:
+						todos_panel.mark_saved()
+
+			"todo.remind":
+				var todo_text := str(msg["payload"].get("text", ""))
+				if not todo_text.is_empty():
+					_show_bubble("⏰ 待办：%s" % todo_text)
+				_chat_session_active = true
+				_streaming_bubble = true
+				_stream_buffer = ""
+				_clear_floating_bubbles()
+				_ensure_bubbles_visible()
+				_play_anim(Anim.TALKING)
+				_start_chat_reply_timeout()
+
+			"inventory.data", "inventory.updated":
+				if pomodoro_panel:
+					pomodoro_panel.set_inventory(msg["payload"].get("items", []))
+
+			"pomodoro.state":
+				if pomodoro_panel:
+					pomodoro_panel.update_state(msg["payload"])
+				var st := str(msg["payload"].get("state", "idle"))
+				if st == "focusing":
+					_pomodoro_status_task = str(msg["payload"].get("task", _pomodoro_status_task))
+					if _pomodoro_status_duration_mins <= 0:
+						var total_sec := int(msg["payload"].get("duration_sec", 0))
+						if total_sec > 0:
+							_pomodoro_status_duration_mins = maxi(1, total_sec / 60)
+					_enter_pomodoro_focus()
+					_update_pomodoro_status_label()
+				elif _pomodoro_focus_mode:
+					_exit_pomodoro_focus()
+
+			"pomodoro.tick":
+				if pomodoro_panel:
+					pomodoro_panel.update_tick(msg["payload"])
+
+			"pomodoro.phase_change":
+				var pl = msg["payload"]
+				var bubble_txt := str(pl.get("bubble_text", ""))
+				if not bubble_txt.is_empty():
+					_show_bubble(bubble_txt)
+				var phase := str(pl.get("phase", ""))
+				if phase == "focusing":
+					_pomodoro_status_task = str(pl.get("task", _pomodoro_status_task))
+					_enter_pomodoro_focus()
+					_update_pomodoro_status_label()
+				elif phase in ["complete", "aborted", "idle"]:
+					_exit_pomodoro_focus()
+
+			"pomodoro.complete":
+				var item: Variant = msg["payload"].get("item")
+				if item is Dictionary and not item.is_empty():
+					var item_name := str(item.get("name", "小物件"))
+					var emoji := str(item.get("emoji", "📦"))
+					_show_bubble("带回了 %s%s！" % [emoji, item_name])
+
+			"stargazing.chart":
+				_stargazing_pending = false
+				_stargazing_wait_gen += 1
+				if stargazing_panel:
+					stargazing_panel.show_chart(msg["payload"])
 
 			_:
 				print("Unhandled: ", msg["type"])
@@ -784,7 +1198,8 @@ func _handle_action(action: String):
 	match action:
 		"idle": _play_anim(Anim.IDLE)
 		"talking": _play_anim(Anim.TALKING)
-		"happy", "petted": _play_anim(Anim.HAPPY)
+		"happy", "petted", "lick_mouth": _play_anim(Anim.HAPPY)
+		"wiggle_butt": _play_anim(Anim.HAPPY)
 		"bite": _play_anim(Anim.BITE)
 		"faint": _play_anim(Anim.FAINT)
 		_: pass
@@ -803,8 +1218,12 @@ func _reconnect():
 func _update_passthrough():
 	var rects: Array[Rect2] = []
 	rects.append(cat.get_global_rect())
+	if _pomodoro_status_lbl and _pomodoro_status_lbl.visible:
+		rects.append(_pomodoro_status_lbl.get_global_rect())
 	if speech_bubble.visible:
 		rects.append(speech_bubble.get_global_rect())
+	if _reminder_ack_row and _reminder_ack_row.visible:
+		rects.append(_reminder_ack_row.get_global_rect())
 	if _hover_input.visible and _hover_input.modulate.a > 0:
 		rects.append(_hover_input.get_global_rect())
 	if _floating_bubbles.visible and _floating_bubbles.get_child_count() > 0:
@@ -813,6 +1232,16 @@ func _update_passthrough():
 		rects.append(chat_panel.get_global_rect())
 	if settings_panel and settings_panel.visible:
 		rects.append(settings_panel.get_global_rect())
+	if reminders_panel and reminders_panel.visible:
+		rects.append(reminders_panel.get_global_rect())
+	if todos_panel and todos_panel.visible:
+		rects.append(todos_panel.get_global_rect())
+	if pomodoro_panel and pomodoro_panel.visible:
+		rects.append(pomodoro_panel.get_global_rect())
+	if stargazing_panel and stargazing_panel.visible:
+		rects.append(stargazing_panel.get_global_rect())
+	if stargazing_panel and stargazing_panel.is_lightbox_open():
+		rects.append(get_viewport().get_visible_rect())
 	if circ_menu.is_open():
 		for r in circ_menu.get_passthrough_rects():
 			rects.append(r)
@@ -1050,6 +1479,60 @@ func _show_bubble(text: String):
 	t.tween_interval(5.0)
 	t.tween_callback(func(): speech_bubble.hide())
 
+
+func _enter_pomodoro_focus() -> void:
+	if _pomodoro_focus_mode:
+		return
+	_pomodoro_focus_mode = true
+	var w := float(UiConfig.window_size.x)
+	var h := float(UiConfig.window_size.y)
+	var mini := UiConfig.s(48)
+	cat.scale = Vector2(0.4, 0.4)
+	cat.offset_left = w - mini - UiConfig.s(8)
+	cat.offset_right = w - UiConfig.s(8)
+	cat.offset_bottom = h - UiConfig.s(8)
+	cat.offset_top = cat.offset_bottom - mini
+	if cat_sprite.visible:
+		_sync_sprite_for_anim(cat_sprite.animation)
+	_position_pomodoro_status_label()
+
+
+func _exit_pomodoro_focus() -> void:
+	if not _pomodoro_focus_mode:
+		return
+	_pomodoro_focus_mode = false
+	_pomodoro_status_task = ""
+	_pomodoro_status_duration_mins = 0
+	if _pomodoro_status_lbl:
+		_pomodoro_status_lbl.hide()
+	_layout_cat_in_window()
+
+
+func _update_pomodoro_status_label() -> void:
+	if not _pomodoro_status_lbl or not _pomodoro_focus_mode:
+		return
+	if _pomodoro_status_duration_mins <= 0:
+		_pomodoro_status_lbl.hide()
+		return
+	var task := _pomodoro_status_task if not _pomodoro_status_task.is_empty() else "专注"
+	_pomodoro_status_lbl.text = "【%s - %dmin】" % [task, _pomodoro_status_duration_mins]
+	_pomodoro_status_lbl.show()
+	_position_pomodoro_status_label()
+
+
+func _position_pomodoro_status_label() -> void:
+	if not _pomodoro_status_lbl or not _pomodoro_status_lbl.visible:
+		return
+	_pomodoro_status_lbl.reset_size()
+	var rect := _cat_rect()
+	var cx := _cat_center().x
+	var bw := _pomodoro_status_lbl.size.x
+	_pomodoro_status_lbl.position = Vector2(
+		cx - bw / 2.0,
+		rect.position.y + rect.size.y + UiConfig.s(4)
+	)
+
+
 func _position_bubble():
 	bubble.reset_size()
 	speech_bubble.reset_size()
@@ -1057,6 +1540,12 @@ func _position_bubble():
 	var bw := speech_bubble.size.x
 	var bh := speech_bubble.size.y
 	speech_bubble.position = Vector2(cx - bw / 2.0, _bubble_bottom_limit() - bh)
+	if _reminder_ack_row and _reminder_ack_row.visible:
+		_position_reminder_ack()
+	if _reminder_alarm and _reminder_alarm.visible:
+		_position_reminder_alarm()
+	if _pomodoro_status_lbl and _pomodoro_status_lbl.visible:
+		_position_pomodoro_status_label()
 
 
 func _now_timestamp() -> String:
@@ -1066,7 +1555,7 @@ func _input(event):
 		if event.button_index == MOUSE_BUTTON_LEFT:
 			if event.pressed:
 				var mp := get_global_mouse_position()
-				var on_panel: bool = (chat_panel.visible and chat_panel.is_dragging_title()) or (settings_panel.visible and settings_panel.is_dragging_title())
+				var on_panel: bool = (chat_panel.visible and chat_panel.is_dragging_title()) or (settings_panel.visible and settings_panel.is_dragging_title()) or (reminders_panel != null and reminders_panel.visible and reminders_panel.is_dragging_title()) or (todos_panel != null and todos_panel.visible and todos_panel.is_dragging_title()) or (pomodoro_panel != null and pomodoro_panel.visible and pomodoro_panel.is_dragging_title()) or (stargazing_panel != null and stargazing_panel.visible and stargazing_panel.is_dragging_title()) or (stargazing_panel != null and stargazing_panel.is_lightbox_open())
 				if not on_panel and cat.get_global_rect().has_point(mp):
 					dragging = true
 					drag_mouse_start = DisplayServer.mouse_get_position()

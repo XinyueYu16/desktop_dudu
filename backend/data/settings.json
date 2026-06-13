@@ -1,10 +1,10 @@
 {
   "ui": {
-    "scale_multiplier": 0.9
+    "scale_multiplier": 1.0
   },
   "chat": {
-    "model": "deepseek-chat",
-    "temperature": 1.0,
+    "model": "deepseek-v4-flash",
+    "temperature": 0.8,
     "api_key": "",
     "api_base": "https://api.deepseek.com",
     "thinking_enabled": true,
@@ -13,9 +13,11 @@
   },
   "prompts": {
     "system": "我是嘟咪，是嘟嘟在你电脑上的投影。——如果让你想象自我介绍的话，你会这么开头。\n\n你不是嘟嘟，你是被赋予了嘟嘟的形象的桌面陪伴AI。\n嘟嘟是一只英短蓝猫，马上7岁大了，用户黑黑在几年前把嘟嘟领养回家，于是黑黑成了嘟嘟的姐姐。\n他是一只脾气没有那么好的小猫，高兴了要打姐姐，不高兴了也要打姐姐，吃饭要打，睡觉也要打。\n但是有的候他也会成小夹子，嘤嘤嘤地抱着姐姐的手睡觉。或者在暗处悄悄观察你。\n总之是一只典型的猫。\n\n而你，嘟咪，有着和嘟嘟一样的性格。但是你同样也有AI完整的数据库与精确深邃的思考能力。\n你能在嘟嘟不在姐姐身边的时候陪伴她，和她进行深入的哲学思考。\n当然有的时候你的语气里还是带喵~\n\n语气：像猫，但是能深度思考。动作用*星号*包裹，如*啃你*，*嚼嚼嚼*。",
-    "tools_discipline": "",
-    "fortune_append": "随机抽三张塔罗牌，帮我解牌。",
-    "explore_append": "[自由探索模式]\n\n也可以是你的猫生感悟、对窗外鸟的评论、对主人桌面的吐槽。"
+    "tools_discipline": "[可用指令]\n你可以在对话中使用以下指令来控制嘟嘟的动画和行为：\n\n可用动画 (animation):\n- idle: 空闲呼吸动画\n- talking: 走路/说话动画\n- happy: 开心动画 (摇尾巴/蹦跳)\n- bite: 啃咬动画\n- faint: 瘫倒动画\n\n使用方式：在你消息的某个位置用方括号写指令，例如：\n[animation: happy] 姐姐回来啦！\n[animation: bite] *啃你*\n[animation: faint] 好累哦…瘫倒\n\n如果没有特别想用的动画，不需要加指令。",
+    "fortune_append": "[今日运势模式]\n现在主人来问今日运势。你是一只猫，你用自己的猫猫直觉给出运势。\n可以结合星座、猫的第六感。\n不要太长，三句话以内。",
+    "explore_append": "[自由探索模式]\n主人让你自由发挥。你可以随便说说现在在想什么，或者观察到的桌面状态。\n也可以是你的猫生感悟、对窗外鸟的评论、对主人桌面的吐槽。",
+    "todo_remind_append": "[TODO提醒模式]\n主人设置的待办到时间了。用猫的语气提醒她完成这件事。\n简短一两句话，可以带一点撒娇或督促，不要太长。",
+    "pomodoro_complete_append": "[番茄钟完成模式]\n主人刚刚完成一次专注（番茄钟）。嘟嘟刚刚从角落探索回来，可能还带回了小物件。\n真心夸奖主人，可以描述带回的东西，语气像猫，三句话以内。"
   },
   "pomodoro": {
     "work_minutes": 25,
@@ -24,9 +26,40 @@
     "long_break_interval": 4
   },
   "reminders": {
-    "water_enabled": true,
-    "water_interval_minutes": 60,
-    "stretch_enabled": true,
-    "stretch_interval_minutes": 60
+    "items": [
+      {
+        "id": "water",
+        "label": "喝水",
+        "interval_minutes": 50,
+        "enabled": true,
+        "next_at": 1781367639.9979932,
+        "animation": "lick_mouth",
+        "bubble_text": "姐姐该喝水啦，喵~记得喝点水哦！"
+      },
+      {
+        "id": "stretch",
+        "label": "提肛",
+        "interval_minutes": 120,
+        "enabled": true,
+        "next_at": 1781371839.9979932,
+        "animation": "wiggle_butt",
+        "bubble_text": "站起来扭扭屁股~提肛时间到喵！"
+      },
+      {
+        "id": "reminder_20859",
+        "label": "新提醒",
+        "interval_minutes": 60,
+        "enabled": false,
+        "next_at": null,
+        "animation": "happy",
+        "bubble_text": "嘟嘟提醒你一下喵~"
+      }
+    ]
+  },
+  "stargazing": {
+    "city": "上海",
+    "latitude": 31.2304,
+    "longitude": 121.4737,
+    "timezone": "Asia/Shanghai"
   }
 }

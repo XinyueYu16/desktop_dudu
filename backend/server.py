@@ -16,9 +16,16 @@ import pystray
 from websockets.asyncio.server import serve
 
 from context import build_messages
+from daily_stats import DailyStatsManager
+from inventory import InventoryManager
 from llm_client import LLMClient
 from memory import MemoryManager
+from pomodoro import PomodoroTimer
+from reminders import ReminderScheduler
+from scheduler import AsyncScheduler
 from settings import SettingsManager
+from stargazing import StargazingService
+from todos import TodoScheduler, TodoStore
 
 # ── .env loader (no extra dependencies) ──
 
@@ -61,6 +68,14 @@ _loop = None
 _llm: LLMClient | None = None
 _memory = MemoryManager()
 _settings = SettingsManager()
+_scheduler = AsyncScheduler()
+_daily_stats = DailyStatsManager()
+_reminders: ReminderScheduler | None = None
+_todo_store = TodoStore()
+_todos: TodoScheduler | None = None
+_inventory = InventoryManager()
+_pomodoro: PomodoroTimer | None = None
+_stargazing: StargazingService | None = None
 
 
 # ── Tray Icon ──
@@ -121,6 +136,11 @@ async def handler(websocket):
 
     # Push persisted state on connect so client never guesses defaults
     await _send("settings.data", _settings.get_all())
+    await _send_reminders_data()
+    await _send_todos_data()
+    await _send_inventory_data()
+    await _send_pomodoro_state()
+    await _send_yesterday_stats()
     await _send_history()
 
     try:
@@ -196,6 +216,113 @@ async def handler(websocket):
                             _llm = _make_llm()
                         await _send("settings.updated", _settings.get_all())
 
+                case "reminders.get":
+                    await _send_reminders_data()
+
+                case "reminders.set":
+                    items = msg.get("items")
+                    if _reminders is not None and isinstance(items, list):
+                        saved = _reminders.set_items(items)
+                        await _send("reminders.data", {"items": saved})
+
+                case "reminders.ack":
+                    rid = (msg.get("id") or "").strip()
+                    if _reminders is not None and rid:
+                        await _reminders.handle_ack(rid)
+                        await _send("reminders.acked", {"id": rid, "ok": True})
+
+                case "todos.get":
+                    await _send_todos_data()
+
+                case "todos.set":
+                    items = msg.get("items")
+                    if isinstance(items, list):
+                        saved = _todo_store.replace_all(items)
+                        if _todos is not None:
+                            _todos.on_todos_changed()
+                        await _send("todos.data", {"items": saved})
+
+                case "todos.add":
+                    text = (msg.get("text") or "").strip()
+                    remind_at = msg.get("remind_at")
+                    if text:
+                        try:
+                            ra = float(remind_at) if remind_at is not None else None
+                        except (TypeError, ValueError):
+                            ra = None
+                        item = _todo_store.add(text, ra)
+                        if _todos is not None:
+                            _todos.on_todos_changed()
+                        await _send("todos.data", {"items": _todo_store.get_all()})
+                        await _send("todos.added", {"item": item})
+
+                case "todos.update":
+                    tid = (msg.get("id") or "").strip()
+                    if tid:
+                        fields = {}
+                        if "text" in msg:
+                            fields["text"] = msg["text"]
+                        if "done" in msg:
+                            fields["done"] = bool(msg["done"])
+                        if "remind_at" in msg:
+                            raw_ra = msg["remind_at"]
+                            if raw_ra is None:
+                                fields["remind_at"] = None
+                            else:
+                                try:
+                                    fields["remind_at"] = float(raw_ra)
+                                except (TypeError, ValueError):
+                                    pass
+                        updated = _todo_store.update(tid, **fields)
+                        if updated is not None:
+                            if _todos is not None:
+                                _todos.on_todos_changed()
+                            await _send("todos.data", {"items": _todo_store.get_all()})
+
+                case "todos.delete":
+                    tid = (msg.get("id") or "").strip()
+                    if tid and _todo_store.delete(tid):
+                        if _todos is not None:
+                            _todos.on_todos_changed()
+                        await _send("todos.data", {"items": _todo_store.get_all()})
+
+                case "pomodoro.start":
+                    if _pomodoro is not None:
+                        task = str(msg.get("task") or msg.get("focus") or "")
+                        try:
+                            duration = int(msg.get("duration_minutes") or msg.get("duration") or 25)
+                        except (TypeError, ValueError):
+                            duration = 25
+                        state = await _pomodoro.start(task, duration)
+                        await _send("pomodoro.state", state)
+
+                case "pomodoro.pause":
+                    if _pomodoro is not None:
+                        state = await _pomodoro.pause()
+                        await _send("pomodoro.state", state)
+
+                case "pomodoro.resume":
+                    if _pomodoro is not None:
+                        state = await _pomodoro.resume()
+                        await _send("pomodoro.state", state)
+
+                case "pomodoro.abort":
+                    if _pomodoro is not None:
+                        state = await _pomodoro.abort()
+                        await _send("pomodoro.state", state)
+
+                case "pomodoro.get":
+                    await _send_pomodoro_state()
+
+                case "inventory.get":
+                    await _send_inventory_data()
+
+                case "stargazing.get":
+                    if _stargazing is not None:
+                        loop = asyncio.get_running_loop()
+                        chart = await loop.run_in_executor(None, _stargazing.build_chart)
+                        await _send("stargazing.chart", chart)
+
                 case _:
                     print(f"[?] Unknown msg type: {msg_type}")
 
@@ -226,8 +353,8 @@ async def _handle_chat(
         if thinking is not None
         else bool(_settings.get("chat.thinking_enabled"))
     )
-    # Fortune / explore — short replies, skip slow reasoning pass
-    if mode in ("fortune", "explore"):
+    # Short-reply modes — skip slow reasoning pass
+    if mode in ("fortune", "explore", "todo_remind", "pomodoro_complete"):
         thinking_on = False
     use_mem = (
         bool(use_memory)
@@ -245,7 +372,8 @@ async def _handle_chat(
 
     mem = _memory if use_mem else None
     messages = build_messages(
-        user_text, mem, _settings, mode=mode, use_memory=use_mem
+        user_text, mem, _settings, mode=mode, use_memory=use_mem,
+        daily_stats=_daily_stats,
     )
 
     if _llm is None:
@@ -295,6 +423,32 @@ async def _send_history():
     if not all_msgs:
         return
     await _send("history.data", {"messages": all_msgs})
+
+
+async def _send_reminders_data():
+    if _reminders is None:
+        return
+    await _send("reminders.data", {"items": _reminders.get_items()})
+
+
+async def _send_todos_data():
+    await _send("todos.data", {"items": _todo_store.get_all()})
+
+
+async def _send_inventory_data():
+    await _send("inventory.data", {"items": _inventory.get_items_enriched()})
+
+
+async def _send_pomodoro_state():
+    if _pomodoro is None:
+        return
+    await _send("pomodoro.state", _pomodoro.get_state())
+
+
+async def _send_yesterday_stats():
+    summary = _daily_stats.build_yesterday_summary()
+    if summary:
+        await _send("daily_stats.yesterday", summary)
 
 
 # ── Send helpers ──
@@ -352,8 +506,17 @@ def _make_llm() -> LLMClient | None:
 # ── Main ──
 
 async def main():
-    global _loop, _llm
+    global _loop, _llm, _reminders, _todos, _pomodoro, _stargazing
     _loop = asyncio.get_running_loop()
+    _reminders = ReminderScheduler(_scheduler, _settings, _daily_stats, _send)
+    _reminders.sync_from_settings()
+    _todos = TodoScheduler(_scheduler, _todo_store, _send, _handle_chat)
+    if _todo_store.repair_remind_times():
+        print("[TODO] Repaired remind_at from remind_at_text (Asia/Shanghai)")
+    _todos.sync_all()
+    _pomodoro = PomodoroTimer(_inventory, _send, _handle_chat)
+    _stargazing = StargazingService(_settings)
+    await _scheduler.start()
     threading.Thread(target=_start_tray, daemon=True).start()
 
     # Init LLM client

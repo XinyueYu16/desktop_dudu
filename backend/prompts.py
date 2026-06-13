@@ -45,16 +45,28 @@ EXPLORE_SYSTEM_APPEND = """[自由探索模式]
 主人让你自由发挥。你可以随便说说现在在想什么，或者观察到的桌面状态。
 也可以是你的猫生感悟、对窗外鸟的评论、对主人桌面的吐槽。"""
 
+TODO_REMIND_APPEND = """[TODO提醒模式]
+主人设置的待办到时间了。用猫的语气提醒她完成这件事。
+简短一两句话，可以带一点撒娇或督促，不要太长。"""
+
+POMODORO_COMPLETE_APPEND = """[番茄钟完成模式]
+主人刚刚完成一次专注（番茄钟）。嘟嘟刚刚从角落探索回来，可能还带回了小物件。
+真心夸奖主人，可以描述带回的东西，语气像猫，三句话以内。"""
+
 DEFAULT_PROMPTS = {
     "system": DUDU_SYSTEM_PROMPT,
     "tools_discipline": TOOLS_DISCIPLINE,
     "fortune_append": FORTUNE_SYSTEM_APPEND.strip(),
     "explore_append": EXPLORE_SYSTEM_APPEND.strip(),
+    "todo_remind_append": TODO_REMIND_APPEND.strip(),
+    "pomodoro_complete_append": POMODORO_COMPLETE_APPEND.strip(),
 }
 
 _MODE_APPEND_KEYS = {
     "fortune": "fortune_append",
     "explore": "explore_append",
+    "todo_remind": "todo_remind_append",
+    "pomodoro_complete": "pomodoro_complete_append",
 }
 
 

@@ -11,14 +11,13 @@ signal close_requested
 signal clear_history_requested
 
 const BASE_SIZE := Vector2(400, 540)
-const TAB_NAMES := ["🖼 通用", "💬 对话", "🍅 番茄", "🔔 提醒"]
+const TAB_NAMES := ["🖼 通用", "💬 对话", "🍅 番茄"]
 const TAB_HINTS := [
 	"调整界面大小，让嘟嘟刚好待在桌面上",
 	"配置 DeepSeek API、V4 模型与喵设提示词",
 	"专注与休息的节奏",
-	"定时温柔提醒，记得喝水和活动",
 ]
-const TAB_KEYS := ["ui", "chat", "pomodoro", "reminders"]
+const TAB_KEYS := ["ui", "chat", "pomodoro"]
 
 # Design rects — title + fixed tabs + scroll content + footer
 const _TITLE_RECT := Vector4(12, 10, 388, 44)
@@ -48,7 +47,7 @@ var _content_parent: VBoxContainer = null
 var _footer: HBoxContainer = null
 var _save_btn: Button = null
 var _clear_confirm: ConfirmationDialog = null
-var _tab_controls: Array = [{}, {}, {}, {}]  # {key: control_node}
+var _tab_controls: Array = [{}, {}, {}]  # {key: control_node}
 var _pending_settings: Dictionary = {}
 
 # ── Model / duration option maps ──
@@ -194,15 +193,7 @@ func _build_footer() -> void:
 func _style_save_button(saved: bool) -> void:
 	if not _save_btn:
 		return
-	_save_btn.flat = true
-	_save_btn.add_theme_stylebox_override("normal", ACStyle.save_button_stylebox(saved))
-	_save_btn.add_theme_stylebox_override("hover", ACStyle.save_button_stylebox(saved, true))
-	_save_btn.add_theme_stylebox_override("pressed", ACStyle.save_button_stylebox(saved, true))
-	_save_btn.add_theme_stylebox_override("disabled", ACStyle.save_button_stylebox(saved))
-	_save_btn.add_theme_font_size_override("font_size", UiConfig.si(13))
-	_save_btn.custom_minimum_size = Vector2(UiConfig.s(88), UiConfig.s(32))
-	for key in ["font_color", "font_hover_color", "font_pressed_color", "font_focus_color", "font_disabled_color"]:
-		_save_btn.add_theme_color_override(key, ACStyle.BROWN)
+	ACStyle.apply_footer_button_theme(_save_btn, saved)
 
 
 func _mark_dirty() -> void:
@@ -337,7 +328,6 @@ func _build_content():
 			0: _build_general_tab(container, tab_idx)
 			1: _build_chat_tab(container, tab_idx)
 			2: _build_pomodoro_tab(container, tab_idx)
-			3: _build_reminders_tab(container, tab_idx)
 
 	call_deferred("_sync_content_layout")
 
@@ -583,17 +573,7 @@ func _add_clear_history_button(parent: VBoxContainer) -> void:
 
 	var btn := Button.new()
 	btn.text = "清空聊天记录"
-	btn.focus_mode = Control.FOCUS_NONE
-	btn.flat = false
-	btn.custom_minimum_size = Vector2(UiConfig.s(160), UiConfig.s(36))
-	btn.add_theme_font_size_override("font_size", UiConfig.si(13))
-	btn.add_theme_stylebox_override("normal", ACStyle.danger_button_stylebox(false))
-	btn.add_theme_stylebox_override("hover", ACStyle.danger_button_stylebox(true))
-	btn.add_theme_stylebox_override("pressed", ACStyle.danger_button_stylebox(true))
-	btn.add_theme_stylebox_override("focus", ACStyle.danger_button_stylebox(false))
-	btn.add_theme_stylebox_override("disabled", ACStyle.danger_button_stylebox(false))
-	for key in ["font_color", "font_hover_color", "font_pressed_color", "font_focus_color", "font_disabled_color"]:
-		btn.add_theme_color_override(key, Color.WHITE)
+	ACStyle.apply_danger_button_theme(btn, 160.0)
 	btn.pressed.connect(func(): _clear_confirm.popup_centered())
 	row.add_child(btn)
 
@@ -807,8 +787,6 @@ func _option_index(key: String, val) -> int:
 		"pomodoro.break_minutes": return DURATIONS_BREAK.find(int(val))
 		"pomodoro.long_break_minutes": return DURATIONS_BREAK.find(int(val))
 		"pomodoro.long_break_interval": return INTERVALS.find(int(val))
-		"reminders.water_interval_minutes": return REMINDER_INTERVALS.find(int(val))
-		"reminders.stretch_interval_minutes": return REMINDER_INTERVALS.find(int(val))
 	return -1
 
 

@@ -10,7 +10,9 @@ signal toggle_changed(action: String, enabled: bool)
 const ACTION_ITEMS: Array[Dictionary] = [
 	{"icon": "💬", "label": "聊天记录", "action": "chat_history"},
 	{"icon": "⏰", "label": "定时提醒", "action": "reminders"},
-	{"icon": "🌍", "label": "自由探索", "action": "explore"},
+	{"icon": "📝", "label": "待办事项", "action": "todos"},
+	{"icon": "🍅", "label": "番茄钟", "action": "explore"},
+	{"icon": "✨", "label": "观星台", "action": "stargazing"},
 	{"icon": "🔮", "label": "每日运势", "action": "fortune"},
 	{"icon": "⚙️", "label": "设置",     "action": "settings"},
 	{"icon": "🚪", "label": "退出",     "action": "quit"},

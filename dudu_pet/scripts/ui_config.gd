@@ -15,12 +15,13 @@ const UI_SCALE_CACHE := "user://dudu_ui_scale.txt"
 
 
 static func bootstrap_multiplier() -> void:
-	if _load_multiplier_from_cache():
-		return
 	var backend_json := ProjectSettings.globalize_path("res://").path_join(
 		"../backend/data/settings.json"
 	)
-	_load_multiplier_from_settings_json(backend_json)
+	if _load_multiplier_from_settings_json(backend_json):
+		persist_multiplier()
+		return
+	_load_multiplier_from_cache()
 
 
 static func persist_multiplier() -> void:
@@ -39,15 +40,17 @@ static func _load_multiplier_from_cache() -> bool:
 	return true
 
 
-static func _load_multiplier_from_settings_json(path: String) -> void:
+static func _load_multiplier_from_settings_json(path: String) -> bool:
 	if not FileAccess.file_exists(path):
-		return
+		return false
 	var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(path))
 	if not parsed is Dictionary:
-		return
+		return false
 	var ui: Variant = parsed.get("ui", {})
 	if ui is Dictionary and ui.has("scale_multiplier"):
 		set_user_multiplier(float(ui["scale_multiplier"]))
+		return true
+	return false
 
 
 static func init_from_screen(screen_size: Vector2i) -> void:
